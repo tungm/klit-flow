@@ -63,7 +63,7 @@ def walk(
     klit_spec = _load_spec(root / ".klit-flowignore")
 
     results: list[SourceFile] = []
-    for path in sorted(root.rglob("*")):
+    for path in sorted(root.rglob("*"), key=lambda p: p.as_posix()):
         if not path.is_file():
             continue
 
