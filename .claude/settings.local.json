@@ -8,7 +8,8 @@
       "Bash(pytest -q)",
       "Bash(pytest tests/test_extractor_kotlin.py -v)",
       "Bash(python -c \":*)",
-      "Bash(pytest tests/test_resolver.py -v)"
+      "Bash(pytest tests/test_resolver.py -v)",
+      "Bash(pytest tests/test_emit.py -v)"
     ]
   }
 }
