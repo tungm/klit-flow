@@ -1,15 +1,23 @@
-"""Emit per-module Markdown docs with YAML frontmatter.
+"""Emit per-module and per-screen Markdown docs with YAML frontmatter.
 
-Output: ``out_dir/docs/modules/<filename>.md``
+Module docs  → ``out_dir/docs/modules/<filename>.md``
+Screen docs  → ``out_dir/docs/screens/<ScreenName>.md``
 
-Frontmatter fields:
+Module frontmatter fields:
   id        — stable graph node ID
   kind      — always "Module"
-  path      — source file path (POSIX, relative to target root when possible)
+  path      — source file path (POSIX)
   depends_on — list of File node IDs this module imports
   symbols   — list of Symbol node IDs declared in this module
 
-Body: deterministic symbol list (no LLM; NL prose is Phase 9).
+Screen frontmatter fields:
+  id            — stable graph node ID
+  kind          — always "Screen"
+  path          — source file path (POSIX)
+  reachable_from — list of Screen node IDs that navigate to this screen
+  navigates_to   — list of Screen node IDs this screen navigates to
+
+Body: deterministic description (no LLM; NL prose is Phase 9).
 """
 
 from pathlib import Path, PurePosixPath
@@ -73,6 +81,60 @@ def emit_module_docs(
 
         slug = node.name.replace(".", "_")
         out_path = docs_dir / f"{slug}.md"
+        out_path.write_text(frontmatter.dumps(post), encoding="utf-8")
+        written.append(out_path)
+
+    return written
+
+
+def emit_screen_docs(
+    screen_nodes: list[GraphNode],
+    edges: list[GraphEdge],
+    out_dir: Path,
+) -> list[Path]:
+    """Write one ``.md`` per Screen node to ``out_dir/docs/screens/``.
+
+    Frontmatter includes ``reachable_from`` and ``navigates_to`` Screen IDs.
+    """
+    if not screen_nodes:
+        return []
+
+    docs_dir = out_dir / "docs" / "screens"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+
+    screen_ids = {n.id for n in screen_nodes}
+
+    navigates_to: dict[str, list[str]] = {}
+    reachable_from: dict[str, list[str]] = {}
+    for edge in edges:
+        if edge.type == RelationType.NAVIGATES_TO:
+            if edge.src_id in screen_ids and edge.dst_id in screen_ids:
+                navigates_to.setdefault(edge.src_id, []).append(edge.dst_id)
+                reachable_from.setdefault(edge.dst_id, []).append(edge.src_id)
+
+    written: list[Path] = []
+    for screen in screen_nodes:
+        nav_to = navigates_to.get(screen.id, [])
+        reach_from = reachable_from.get(screen.id, [])
+
+        lines: list[str] = [f"## {screen.name}", ""]
+        if nav_to:
+            lines.append(f"Navigates to {len(nav_to)} screen(s).")
+        if reach_from:
+            lines.append(f"Reachable from {len(reach_from)} screen(s).")
+        if not nav_to and not reach_from:
+            lines.append("_No navigation edges detected._")
+
+        post = frontmatter.Post(
+            "\n".join(lines),
+            id=screen.id,
+            kind="Screen",
+            path=PurePosixPath(screen.file_path).as_posix(),
+            reachable_from=reach_from,
+            navigates_to=nav_to,
+        )
+
+        out_path = docs_dir / f"{screen.name}.md"
         out_path.write_text(frontmatter.dumps(post), encoding="utf-8")
         written.append(out_path)
 

@@ -1,5 +1,6 @@
 package com.example.miniapp
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
 
@@ -9,6 +10,10 @@ class AuthActivity : AppCompatActivity() {
     }
 
     fun login(username: String, password: String): Boolean {
-        return username == "admin"
+        if (username == "admin") {
+            startActivity(Intent(this, ProfileActivity::class.java))
+            return true
+        }
+        return false
     }
 }
