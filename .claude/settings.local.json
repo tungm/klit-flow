@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(pytest tests/test_walker.py -v)",
+      "Bash(ruff format:*)",
+      "Bash(ruff check:*)",
+      "Bash(pytest -q)",
+      "Bash(pytest tests/test_extractor_kotlin.py -v)",
+      "Bash(python -c \":*)"
+    ]
+  }
+}
