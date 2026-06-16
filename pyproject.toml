@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "klit-flow"
-version = "0.1.0"
+version = "1.0.0"
 description = "Local, offline code-intelligence tool for mobile app dependency and screen-flow graphs."
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "tree-sitter>=0.23",
