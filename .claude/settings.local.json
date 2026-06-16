@@ -14,7 +14,9 @@
       "Bash(pytest tests/test_flows_android.py -v)",
       "Bash(python:*)",
       "Bash(pytest tests/test_store.py -v)",
-      "Bash(pytest tests/test_search.py -v)"
+      "Bash(pytest tests/test_search.py -v)",
+      "Bash(pytest tests/test_mcp_server.py -v)",
+      "Bash(pytest tests/test_summarize.py -v)"
     ]
   }
 }

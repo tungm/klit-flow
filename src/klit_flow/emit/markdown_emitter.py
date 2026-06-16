@@ -17,9 +17,15 @@ Screen frontmatter fields:
   reachable_from — list of Screen node IDs that navigate to this screen
   navigates_to   — list of Screen node IDs this screen navigates to
 
-Body: deterministic description (no LLM; NL prose is Phase 9).
+Body: deterministic description.  When *summarizer* is supplied (Phase 9
+``--summaries`` mode), a 1–2 sentence NL description is appended to the body
+via a local Ollama model.  Off by default; behavior is unchanged when
+``summarizer=None``.
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 import frontmatter
@@ -31,8 +37,17 @@ def emit_module_docs(
     nodes: list[GraphNode],
     edges: list[GraphEdge],
     out_dir: Path,
+    summarizer: Callable[[GraphNode], str | None] | None = None,
 ) -> list[Path]:
-    """Write one ``.md`` per File node; return the list of written paths."""
+    """Write one ``.md`` per File node; return the list of written paths.
+
+    Parameters
+    ----------
+    summarizer:
+        Optional callable ``(GraphNode) -> str | None``.  When provided,
+        its return value (if non-empty) is appended to the body as a NL
+        summary paragraph.  Pass ``None`` (default) for deterministic output.
+    """
     docs_dir = out_dir / "docs" / "modules"
     docs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -70,6 +85,12 @@ def emit_module_docs(
         else:
             lines.append("_No symbols extracted._")
 
+        # Optional NL summary (Phase 9 --summaries mode)
+        if summarizer is not None:
+            summary = summarizer(node)
+            if summary:
+                lines += ["", "### Summary", "", summary]
+
         post = frontmatter.Post(
             "\n".join(lines),
             id=node.id,
@@ -91,10 +112,18 @@ def emit_screen_docs(
     screen_nodes: list[GraphNode],
     edges: list[GraphEdge],
     out_dir: Path,
+    summarizer: Callable[[GraphNode], str | None] | None = None,
 ) -> list[Path]:
     """Write one ``.md`` per Screen node to ``out_dir/docs/screens/``.
 
     Frontmatter includes ``reachable_from`` and ``navigates_to`` Screen IDs.
+
+    Parameters
+    ----------
+    summarizer:
+        Optional callable ``(GraphNode) -> str | None``.  When provided,
+        its return value (if non-empty) is appended to the body as a NL
+        summary paragraph.
     """
     if not screen_nodes:
         return []
@@ -124,6 +153,12 @@ def emit_screen_docs(
             lines.append(f"Reachable from {len(reach_from)} screen(s).")
         if not nav_to and not reach_from:
             lines.append("_No navigation edges detected._")
+
+        # Optional NL summary (Phase 9 --summaries mode)
+        if summarizer is not None:
+            summary = summarizer(screen)
+            if summary:
+                lines += ["", "### Summary", "", summary]
 
         post = frontmatter.Post(
             "\n".join(lines),

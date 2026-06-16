@@ -33,7 +33,9 @@ def query(
 @app.command()
 def serve() -> None:
     """Start the MCP server over stdio."""
-    typer.echo("serve: not yet implemented")
+    from klit_flow.server.mcp_server import main
+
+    main()
 
 
 @app.command()
