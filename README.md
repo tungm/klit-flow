@@ -26,35 +26,54 @@ Everything runs on your machine. No source code, symbol names, or file paths eve
 
 ## Installation
 
-### From source (development / macOS)
+### From source
 
 ```bash
 # 1. Clone or copy the source
 git clone <your-repo-url> klit-flow
 cd klit-flow
+```
 
-# 2. Ensure Python 3.11+ is available
-python3 --version        # must be 3.11+
-# If not: brew install python@3.11
+**2. Ensure Python 3.11+ is available**
 
-# 3. Create a virtual environment (recommended)
+| Platform | Command |
+|----------|---------|
+| macOS | `python3 --version` — if missing: `brew install python@3.11` |
+| Windows | `python --version` — if missing: download from [python.org](https://www.python.org/downloads/) |
+
+**3. Create a virtual environment (recommended)**
+
+```bash
+# macOS / Linux
 python3 -m venv .venv
 source .venv/bin/activate
 
-# 4. Install in editable mode with dev dependencies
+# Windows (PowerShell)
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+
+# Windows (Command Prompt)
+python -m venv .venv
+.venv\Scripts\activate.bat
+```
+
+**4. Install and verify**
+
+```bash
+# Install in editable mode with dev dependencies
 pip install -e ".[dev]"
 
-# 5. Install PyTorch (required by sentence-transformers)
+# Install PyTorch (required by sentence-transformers)
 pip install torch
 
-# 6. Verify
+# Verify the CLI is available
 klit-flow --help
 
-# 7. Confirm everything is green
+# Confirm everything is green
 ruff format --check . && ruff check . && pytest -q
 ```
 
-On the first `klit-flow analyze` run the embedding model downloads once (~130 MB) and is cached at `~/.cache/huggingface/`. All subsequent runs are fully offline.
+On the first `klit-flow analyze` run the embedding model downloads once (~130 MB) and is cached locally. All subsequent runs are fully offline.
 
 ### From a release wheel (macOS / Linux)
 
@@ -77,11 +96,10 @@ Verify the install:
 klit-flow --help
 ```
 
-> **Tip (macOS):** if `klit-flow` is not found after install, add pip's bin directory to your PATH:
-> ```bash
-> export PATH="$HOME/Library/Python/3.11/bin:$PATH"
-> ```
-> Add that line to `~/.zshrc` to make it permanent.
+> **Tip — if `klit-flow` is not found after install:**
+>
+> - **macOS:** `export PATH="$HOME/Library/Python/3.11/bin:$PATH"` (add to `~/.zshrc`)
+> - **Windows:** ensure the Python `Scripts\` folder is on your PATH, or use the virtual environment — `klit-flow` will be available while it is active.
 
 ---
 
@@ -103,7 +121,17 @@ The index is written to `.klit-flow/` inside the target repo (gitignored by defa
 klit-flow query "authentication screen"
 ```
 
-### 3. Expose to AI agents via MCP
+### 3. Query navigation flows
+
+```bash
+# All screen-to-screen navigation edges
+klit-flow flows
+
+# Only edges where AuthActivity is source or destination
+klit-flow flows AuthActivity
+```
+
+### 4. Expose to AI agents via MCP
 
 ```bash
 klit-flow serve          # starts the MCP server over stdio
@@ -124,7 +152,7 @@ Add klit-flow to your MCP client (e.g. Claude Desktop `claude_desktop_config.jso
 }
 ```
 
-### 4. Optional: generate NL summaries
+### 5. Optional: generate NL summaries
 
 Requires a running Ollama instance with a model pulled (e.g. `ollama pull llama3.2`):
 
@@ -140,8 +168,11 @@ Each module and screen doc gains a 1–2 sentence description in its body.
 
 | Problem | Fix |
 |---------|-----|
-| `klit-flow: command not found` | Add pip's bin dir to PATH: `export PATH="$HOME/Library/Python/3.11/bin:$PATH"` |
-| `ModuleNotFoundError: No module named 'torch'` | `pip3 install torch` |
+| `klit-flow: command not found` (macOS) | `export PATH="$HOME/Library/Python/3.11/bin:$PATH"` |
+| `klit-flow` not recognised (Windows) | Activate the venv (`.venv\Scripts\Activate.ps1`) or add Python's `Scripts\` folder to PATH |
+| `'source' is not recognized` (Windows) | Use `.venv\Scripts\Activate.ps1` (PowerShell) or `.venv\Scripts\activate.bat` (CMD) instead of `source` |
+| `Activate.ps1 cannot be loaded, running scripts is disabled` | Run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser` once in PowerShell, then retry |
+| `ModuleNotFoundError: No module named 'torch'` | `pip install torch` |
 | Slow first `analyze` | Normal — embedding model is downloading; subsequent runs are instant |
 | `FileNotFoundError: No index found` on `serve` or `query` | Run `klit-flow analyze` first to build the index |
 

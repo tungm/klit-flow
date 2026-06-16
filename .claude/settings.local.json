@@ -17,7 +17,8 @@
       "Bash(pytest tests/test_search.py -v)",
       "Bash(pytest tests/test_mcp_server.py -v)",
       "Bash(pytest tests/test_summarize.py -v)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(pytest tests/test_cli_flows.py -v)"
     ]
   }
 }

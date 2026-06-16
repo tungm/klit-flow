@@ -457,6 +457,7 @@ it, behavior is unchanged and offline.
 klit-flow analyze <path> [--platform android|ios|react_native|flutter]
                          [--summaries] [--force]
 klit-flow query "<text>"            # hybrid search from the terminal
+klit-flow flows [<screen>]          # list NAVIGATES_TO edges; filter by screen name
 klit-flow serve                     # start MCP server (stdio)
 klit-flow status                    # index freshness for the repo
 klit-flow clean                     # remove .klit-flow/ for the repo
