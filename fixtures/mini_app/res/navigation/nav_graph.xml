@@ -14,13 +14,54 @@
     <fragment
         android:id="@+id/authFragment"
         android:name="com.example.miniapp.AuthActivity">
+        <!-- Legacy path -->
         <action
             android:id="@+id/action_auth_to_profile"
             app:destination="@+id/profileFragment" />
+        <!-- API auth error -->
+        <action
+            android:id="@+id/action_auth_to_autherror"
+            app:destination="@+id/authErrorFragment" />
+        <!-- API network error -->
+        <action
+            android:id="@+id/action_auth_to_networkerror"
+            app:destination="@+id/networkErrorFragment" />
+        <!-- Success, admin user -->
+        <action
+            android:id="@+id/action_auth_to_admindashboard"
+            app:destination="@+id/adminDashboardFragment" />
+        <!-- Success, standard user, password current -->
+        <action
+            android:id="@+id/action_auth_to_dashboard"
+            app:destination="@+id/dashboardFragment" />
+        <!-- Success, standard user, password expired -->
+        <action
+            android:id="@+id/action_auth_to_passwordexpired"
+            app:destination="@+id/passwordExpiredFragment" />
     </fragment>
 
     <fragment
         android:id="@+id/profileFragment"
         android:name="com.example.miniapp.ProfileActivity" />
+
+    <fragment
+        android:id="@+id/authErrorFragment"
+        android:name="com.example.miniapp.AuthErrorActivity" />
+
+    <fragment
+        android:id="@+id/networkErrorFragment"
+        android:name="com.example.miniapp.NetworkErrorActivity" />
+
+    <fragment
+        android:id="@+id/dashboardFragment"
+        android:name="com.example.miniapp.DashboardActivity" />
+
+    <fragment
+        android:id="@+id/adminDashboardFragment"
+        android:name="com.example.miniapp.AdminDashboardActivity" />
+
+    <fragment
+        android:id="@+id/passwordExpiredFragment"
+        android:name="com.example.miniapp.PasswordExpiredActivity" />
 
 </navigation>

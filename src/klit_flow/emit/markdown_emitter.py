@@ -135,12 +135,16 @@ def emit_screen_docs(
 
     navigates_to: dict[str, list[str]] = {}
     reachable_from: dict[str, list[str]] = {}
+    # Build edge lookup for condition info
+    nav_edges_by_src: dict[str, list[GraphEdge]] = {}
     for edge in edges:
         if edge.type == RelationType.NAVIGATES_TO:
             if edge.src_id in screen_ids and edge.dst_id in screen_ids:
                 navigates_to.setdefault(edge.src_id, []).append(edge.dst_id)
                 reachable_from.setdefault(edge.dst_id, []).append(edge.src_id)
+                nav_edges_by_src.setdefault(edge.src_id, []).append(edge)
 
+    screen_by_id = {n.id: n for n in screen_nodes}
     written: list[Path] = []
     for screen in screen_nodes:
         nav_to = navigates_to.get(screen.id, [])
@@ -153,6 +157,18 @@ def emit_screen_docs(
             lines.append(f"Reachable from {len(reach_from)} screen(s).")
         if not nav_to and not reach_from:
             lines.append("_No navigation edges detected._")
+
+        # Add navigation details with conditions
+        outbound_edges = nav_edges_by_src.get(screen.id, [])
+        if outbound_edges:
+            lines += ["", "### Navigation flows", ""]
+            for edge in outbound_edges:
+                dst = screen_by_id.get(edge.dst_id)
+                dst_name = dst.name if dst else edge.dst_id
+                trigger = edge.trigger or "programmatic"
+                lines.append(f"- **{dst_name}** (trigger: {trigger})")
+                for i, cond in enumerate(edge.conditions, 1):
+                    lines.append(f"  {i}. [{cond.kind}] {cond.expression}")
 
         # Optional NL summary (Phase 9 --summaries mode)
         if summarizer is not None:

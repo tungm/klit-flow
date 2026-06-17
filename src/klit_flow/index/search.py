@@ -111,9 +111,10 @@ def build_index(
         bm25.add(node.id, text)
     bm25.build()
 
-    # Semantic: encode all texts, persist to vector store
-    vectors = embedder.encode(texts)
-    store.upsert_vectors([n.id for n in nodes], vectors)
+    # Semantic: encode all texts, persist to vector store (skip if model unavailable)
+    if getattr(embedder, "available", True):
+        vectors = embedder.encode(texts)
+        store.upsert_vectors([n.id for n in nodes], vectors)
 
     return bm25
 
@@ -150,6 +151,8 @@ def hybrid_search(
     """
     # Retrieve 2k candidates from each source to give RRF enough signal.
     bm25_hits = bm25.search(query, k=k * 2)
+    if not getattr(embedder, "available", True):
+        return [nid for nid, _ in bm25_hits[:k]]
     query_vec = embedder.encode([query])[0]
     semantic_hits = store.vector_search(query_vec, k=k * 2)
     return _rrf_fuse(bm25_hits, semantic_hits, k=k)

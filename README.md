@@ -134,8 +134,14 @@ klit-flow flows AuthActivity
 ### 4. Expose to AI agents via MCP
 
 ```bash
-klit-flow serve          # starts the MCP server over stdio
+klit-flow serve          # starts the MCP server (stdio) + web portal
+klit-flow serve --port 8080   # custom port (default: 5173)
 ```
+
+Open **http://127.0.0.1:5173** in a browser to get the graph visualiser:
+- **Graph tab** — force-directed canvas graph; drag nodes, zoom/pan, click to inspect.
+- **Flows tab** — table of all `NAVIGATES_TO` edges; click any row to filter by screen.
+- **Search tab** — type in the header bar for live hybrid search; click a result to jump to its node.
 
 MCP tools available: `query`, `context`, `impact`, `flows`, `cypher`.
 

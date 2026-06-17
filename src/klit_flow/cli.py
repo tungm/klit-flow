@@ -12,6 +12,24 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+
+def _version_callback(value: bool) -> None:
+    if value:
+        from klit_flow import __version__
+
+        typer.echo(f"klit-flow {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: bool = typer.Option(
+        False, "--version", "-V", callback=_version_callback, is_eager=True, help="Show version."
+    ),
+) -> None:
+    pass
+
+
 _KLIT_DIR = ".klit-flow"
 _DB_NAME = "graph.db"
 _BM25_NAME = "bm25.pkl"
@@ -65,7 +83,10 @@ def analyze(
         raise typer.Exit(0)
 
     if db_path.exists() and force:
-        shutil.rmtree(db_path)
+        if db_path.is_dir():
+            shutil.rmtree(db_path)
+        else:
+            db_path.unlink()
 
     klit_dir.mkdir(parents=True, exist_ok=True)
 
@@ -113,7 +134,7 @@ def analyze(
     emit_dependency_diagram(nodes, edges, out_dir)
     emit_flow_diagram(screen_nodes, flow_edges, out_dir)
 
-    typer.echo(f"\nDone. {len(nodes)} nodes, {len(edges)} edges → {out_dir.relative_to(root)}")
+    typer.echo(f"\nDone. {len(nodes)} nodes, {len(edges)} edges -> {out_dir.relative_to(root)}")
 
 
 # ---------------------------------------------------------------------------
@@ -176,20 +197,22 @@ def flows(
         typer.echo("No index found. Run 'klit-flow analyze' first.", err=True)
         raise typer.Exit(1)
 
+    from klit_flow.graph.store import parse_conditions_json
+
     with LadybugGraphStore(db_path) as store:
         if screen:
-            s = screen.replace("'", "\\'")
+            s = screen.replace("\\", "\\\\").replace("'", "\\'")
             rows = store.query(
                 f"MATCH (a:KlitNode)-[e:KlitEdge]->(b:KlitNode) "
                 f"WHERE e.type = 'NAVIGATES_TO' AND (a.name = '{s}' OR b.name = '{s}') "
-                f"RETURN a.name, b.name, e.trigger, e.confidence "
+                f"RETURN a.name, b.name, e.trigger, e.confidence, e.condition "
                 f"ORDER BY a.name, b.name"
             )
         else:
             rows = store.query(
                 "MATCH (a:KlitNode)-[e:KlitEdge]->(b:KlitNode) "
                 "WHERE e.type = 'NAVIGATES_TO' "
-                "RETURN a.name, b.name, e.trigger, e.confidence "
+                "RETURN a.name, b.name, e.trigger, e.confidence, e.condition "
                 "ORDER BY a.name, b.name"
             )
 
@@ -200,10 +223,18 @@ def flows(
         typer.echo(msg)
         return
 
-    typer.echo(f"{'FROM':<30} {'TO':<30} {'TRIGGER':<16} CONF")
-    typer.echo("-" * 82)
-    for src_name, dst_name, trigger, confidence in rows:
-        typer.echo(f"{src_name:<30} {dst_name:<30} {trigger:<16} {confidence:.2f}")
+    typer.echo(f"{'FROM':<25} {'TO':<25} {'TRIGGER':<14} {'CONF':<6} CONDITIONS")
+    typer.echo("-" * 100)
+    for row in rows:
+        src_name, dst_name, trigger, confidence, cond_raw = row
+        conds = parse_conditions_json(cond_raw)
+        if conds:
+            cond_str = " → ".join(
+                f"[{c.get('kind', '?')}] {c.get('expression', '')}" for c in conds
+            )
+        else:
+            cond_str = "-"
+        typer.echo(f"{src_name:<25} {dst_name:<25} {trigger:<14} {confidence:<6.2f} {cond_str}")
 
 
 # ---------------------------------------------------------------------------
@@ -212,11 +243,44 @@ def flows(
 
 
 @app.command()
-def serve() -> None:
-    """Start the MCP server over stdio."""
-    from klit_flow.server.mcp_server import main
+def serve(
+    port: int = typer.Option(5173, "--port", help="Web portal port."),
+) -> None:
+    """Start the MCP server (stdio) and the web portal on --port."""
+    import threading
 
-    main()
+    import uvicorn
+
+    from klit_flow.graph.store import LadybugGraphStore
+    from klit_flow.index.bm25 import BM25Index
+    from klit_flow.index.embeddings import Embedder
+    from klit_flow.server.mcp_server import create_server
+    from klit_flow.server.web_server import create_web_app
+
+    target = Path.cwd()
+    _, db_path, bm25_path, _ = _klit_paths(target)
+    if not db_path.exists():
+        typer.echo("No index found. Run 'klit-flow analyze' first.", err=True)
+        raise typer.Exit(1)
+
+    store = LadybugGraphStore(db_path)
+    bm25 = BM25Index.load(bm25_path) if bm25_path.exists() else _empty_bm25()
+    embedder = Embedder()
+
+    web_app = create_web_app(store, bm25, embedder)
+    mcp = create_server(store, bm25, embedder)
+
+    config = uvicorn.Config(web_app, host="127.0.0.1", port=port, log_level="warning")
+    uv_server = uvicorn.Server(config)
+    web_thread = threading.Thread(target=uv_server.run, daemon=True)
+    web_thread.start()
+    typer.echo(f"Web portal → http://127.0.0.1:{port}", err=True)
+
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        uv_server.should_exit = True
+        store.close()
 
 
 # ---------------------------------------------------------------------------

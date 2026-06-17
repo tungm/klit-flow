@@ -38,6 +38,19 @@ class GraphNode(BaseModel):
     language: str
 
 
+class ConditionLevel(BaseModel):
+    """One level in a nested condition chain.
+
+    Each level represents a single control-flow guard enclosing a navigation
+    call.  Levels are ordered outermost-first (the first item is the
+    top-level enclosing condition).
+    """
+
+    expression: str  # e.g. "loginResult is Success", "user.isAdmin"
+    kind: str  # "if" | "else" | "when_branch" | "when_else" | "annotation"
+    source_line: int | None = None
+
+
 class GraphEdge(BaseModel):
     src_id: str
     dst_id: str
@@ -45,4 +58,5 @@ class GraphEdge(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     file_path: str | None = None
     line: int | None = None
-    trigger: str | None = None  # NAVIGATES_TO: e.g. "button_tap", "deep_link"
+    trigger: str | None = None  # NAVIGATES_TO: e.g. "button_tap", "api_response"
+    conditions: list[ConditionLevel] = Field(default_factory=list)

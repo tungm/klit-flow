@@ -94,9 +94,15 @@ def emit_flow_diagram(
                 seen.add(nid)
 
     for e in nav_edges:
-        trigger = _mmd_label(e.trigger or "")
-        if trigger:
-            lines.append(f'  {_mmd_id(e.src_id)} -->|"{trigger}"| {_mmd_id(e.dst_id)}')
+        label_parts: list[str] = []
+        if e.trigger:
+            label_parts.append(e.trigger)
+        if e.conditions:
+            cond_str = " / ".join(c.expression for c in e.conditions)
+            label_parts.append(cond_str)
+        label = _mmd_label(" | ".join(label_parts)) if label_parts else ""
+        if label:
+            lines.append(f'  {_mmd_id(e.src_id)} -->|"{label}"| {_mmd_id(e.dst_id)}')
         else:
             lines.append(f"  {_mmd_id(e.src_id)} --> {_mmd_id(e.dst_id)}")
 

@@ -33,7 +33,7 @@ klit-flow analyze <path> --platform <android|ios|react_native|flutter>
 # Other CLI commands
 klit-flow query "<text>"   # hybrid search
 klit-flow flows [<screen>] # list NAVIGATES_TO edges; filter by screen name
-klit-flow serve            # start MCP server over stdio
+klit-flow serve [--port N] # start MCP server (stdio) + web portal at http://127.0.0.1:N (default 5173)
 klit-flow status           # index freshness
 klit-flow clean            # remove .klit-flow/ for the repo
 ```

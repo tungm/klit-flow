@@ -28,6 +28,9 @@ class Embedder:
     """
 
     def __init__(self, model_name: str = DEFAULT_MODEL) -> None:
+        self._model = None
+        self._dim: int = 384  # default; updated on successful load
+
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:
@@ -36,13 +39,25 @@ class Embedder:
                 "Install it with: pip install sentence-transformers"
             ) from exc
 
-        logger.debug("Loading embedding model %r", model_name)
-        self._model = SentenceTransformer(model_name)
-        get_dim = (
-            getattr(self._model, "get_embedding_dimension", None)
-            or self._model.get_sentence_embedding_dimension
-        )
-        self._dim: int = get_dim()
+        try:
+            logger.debug("Loading embedding model %r", model_name)
+            self._model = SentenceTransformer(model_name)
+            get_dim = (
+                getattr(self._model, "get_embedding_dimension", None)
+                or self._model.get_sentence_embedding_dimension
+            )
+            self._dim = get_dim()
+        except OSError as exc:
+            logger.warning(
+                "Embedding model could not be loaded (%s). "
+                "Semantic search disabled; falling back to BM25-only.",
+                exc,
+            )
+
+    @property
+    def available(self) -> bool:
+        """True if the model loaded successfully and encode() can be called."""
+        return self._model is not None
 
     @property
     def dim(self) -> int:
@@ -63,5 +78,10 @@ class Embedder:
         list[list[float]]
             One ``float`` list per input text.
         """
+        if self._model is None:
+            raise RuntimeError(
+                "Embedding model is not available. "
+                "Check logs for the load error (likely an out-of-memory condition)."
+            )
         vectors = self._model.encode(texts, normalize_embeddings=True)
         return vectors.tolist()

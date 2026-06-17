@@ -22,7 +22,9 @@ NULL for nodes that have not yet been embedded.
 
 from __future__ import annotations
 
+import json
 import logging
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,25 @@ import ladybug
 from klit_flow.graph.model import GraphEdge, GraphNode
 
 logger = logging.getLogger(__name__)
+
+
+def parse_conditions_json(raw: str) -> list[dict[str, Any]]:
+    """Parse a condition JSON string stored in the DB ``condition`` column.
+
+    Returns a list of dicts with ``expression``, ``kind``, and optionally
+    ``source_line``.  Gracefully returns an empty list for empty strings,
+    ``None``, or malformed JSON.
+    """
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return parsed
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return []
+
 
 # Stable identifiers — never rename after first use; DB schema depends on them.
 _NODE_TABLE = "KlitNode"
@@ -97,6 +118,7 @@ class LadybugGraphStore(GraphStore):
 
     def __init__(self, db_path: Path, emb_dim: int = 384) -> None:
         self._emb_dim = emb_dim
+        self._lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = ladybug.Database(str(db_path))
         self._conn = ladybug.Connection(self._db)
@@ -130,7 +152,8 @@ class LadybugGraphStore(GraphStore):
                 confidence DOUBLE,
                 file_path  STRING,
                 line       INT64,
-                trigger    STRING
+                trigger    STRING,
+                condition  STRING
             )
         """)
 
@@ -170,7 +193,7 @@ class LadybugGraphStore(GraphStore):
             self._conn.execute(
                 f"MATCH (a:{_NODE_TABLE} {{id: $src}}), (b:{_NODE_TABLE} {{id: $dst}}) "
                 f"CREATE (a)-[:{_EDGE_TABLE} {{type: $type, confidence: $conf, "
-                f"file_path: $fp, line: $line, trigger: $trigger}}]->(b)",
+                f"file_path: $fp, line: $line, trigger: $trigger, condition: $cond}}]->(b)",
                 {
                     "src": edge.src_id,
                     "dst": edge.dst_id,
@@ -179,6 +202,9 @@ class LadybugGraphStore(GraphStore):
                     "fp": edge.file_path or "",
                     "line": edge.line or 0,
                     "trigger": edge.trigger or "",
+                    "cond": json.dumps([c.model_dump() for c in edge.conditions])
+                    if edge.conditions
+                    else "",
                 },
             )
 
@@ -186,7 +212,8 @@ class LadybugGraphStore(GraphStore):
 
     def query(self, cypher: str) -> list[list[Any]]:
         """Execute *cypher* and return all rows as ``list[list[Any]]``."""
-        return self._conn.execute(cypher).get_all()
+        with self._lock:
+            return self._conn.execute(cypher).get_all()
 
     # ── Vectors ───────────────────────────────────────────────────────────────
 
@@ -209,12 +236,13 @@ class LadybugGraphStore(GraphStore):
 
     def vector_search(self, embedding: list[float], k: int = 10) -> list[str]:
         """Return up to *k* node IDs nearest to *embedding* by cosine similarity."""
-        vec_literal = "[" + ", ".join(f"{v:.8f}" for v in embedding) + "]"
-        res = self._conn.execute(
-            f"CALL QUERY_VECTOR_INDEX('{_NODE_TABLE}', '{_VEC_INDEX}', "
-            f"{vec_literal}, {k}) RETURN node.id"
-        )
-        return [row[0] for row in res.get_all()]
+        with self._lock:
+            vec_literal = "[" + ", ".join(f"{v:.8f}" for v in embedding) + "]"
+            res = self._conn.execute(
+                f"CALL QUERY_VECTOR_INDEX('{_NODE_TABLE}', '{_VEC_INDEX}', "
+                f"{vec_literal}, {k}) RETURN node.id"
+            )
+            return [row[0] for row in res.get_all()]
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 

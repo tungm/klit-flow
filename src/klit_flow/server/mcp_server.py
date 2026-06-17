@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp import FastMCP
 
-from klit_flow.graph.store import GraphStore
+from klit_flow.graph.store import GraphStore, parse_conditions_json
 from klit_flow.index.bm25 import BM25Index
 from klit_flow.index.search import hybrid_search
 
@@ -38,8 +38,8 @@ _SERVER_NAME = "klit-flow"
 
 
 def _esc(s: str) -> str:
-    """Escape a string for inline use in a Cypher literal (single-quote only)."""
-    return s.replace("'", "\\'")
+    """Escape a string for inline use in a Cypher literal."""
+    return s.replace("\\", "\\\\").replace("'", "\\'")
 
 
 def _rows_to_dicts(rows: list[list[Any]], keys: list[str]) -> list[dict[str, Any]]:
@@ -121,18 +121,36 @@ def create_server(
 
         out_rows = store.query(
             f"MATCH (n:KlitNode {{id: '{nid}'}})-[e:KlitEdge]->(m:KlitNode) "
-            f"RETURN e.type, m.id, m.name, m.kind"
+            f"RETURN e.type, m.id, m.name, m.kind, e.trigger, e.confidence, e.condition"
         )
         outbound = [
-            {"type": r[0], "dst_id": r[1], "dst_name": r[2], "dst_kind": r[3]} for r in out_rows
+            {
+                "type": r[0],
+                "dst_id": r[1],
+                "dst_name": r[2],
+                "dst_kind": r[3],
+                "trigger": r[4],
+                "confidence": r[5],
+                "conditions": parse_conditions_json(r[6]),
+            }
+            for r in out_rows
         ]
 
         in_rows = store.query(
             f"MATCH (m:KlitNode)-[e:KlitEdge]->(n:KlitNode {{id: '{nid}'}}) "
-            f"RETURN e.type, m.id, m.name, m.kind"
+            f"RETURN e.type, m.id, m.name, m.kind, e.trigger, e.confidence, e.condition"
         )
         inbound = [
-            {"type": r[0], "src_id": r[1], "src_name": r[2], "src_kind": r[3]} for r in in_rows
+            {
+                "type": r[0],
+                "src_id": r[1],
+                "src_name": r[2],
+                "src_kind": r[3],
+                "trigger": r[4],
+                "confidence": r[5],
+                "conditions": parse_conditions_json(r[6]),
+            }
+            for r in in_rows
         ]
 
         return json.dumps({"node": node, "outbound": outbound, "inbound": inbound})
@@ -167,7 +185,8 @@ def create_server(
         screen name matches.
 
         Each edge has ``src_id``, ``src_name``, ``dst_id``, ``dst_name``,
-        ``trigger``, and ``confidence``.
+        ``trigger``, ``confidence``, and ``conditions`` (structured list of
+        condition levels with ``expression``, ``kind``, and ``source_line``).
         """
         if screen:
             sym = _esc(screen)
@@ -175,13 +194,13 @@ def create_server(
                 f"MATCH (a:KlitNode)-[e:KlitEdge]->(b:KlitNode) "
                 f"WHERE e.type = 'NAVIGATES_TO' "
                 f"AND (a.name = '{sym}' OR b.name = '{sym}') "
-                f"RETURN a.id, a.name, b.id, b.name, e.trigger, e.confidence"
+                f"RETURN a.id, a.name, b.id, b.name, e.trigger, e.confidence, e.condition"
             )
         else:
             rows = store.query(
                 "MATCH (a:KlitNode)-[e:KlitEdge]->(b:KlitNode) "
                 "WHERE e.type = 'NAVIGATES_TO' "
-                "RETURN a.id, a.name, b.id, b.name, e.trigger, e.confidence"
+                "RETURN a.id, a.name, b.id, b.name, e.trigger, e.confidence, e.condition"
             )
 
         edges = [
@@ -192,6 +211,7 @@ def create_server(
                 "dst_name": r[3],
                 "trigger": r[4],
                 "confidence": r[5],
+                "conditions": parse_conditions_json(r[6]),
             }
             for r in rows
         ]
