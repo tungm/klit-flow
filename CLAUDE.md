@@ -70,6 +70,60 @@ Index artifacts are written to `.klit-flow/` inside the target repo (gitignored)
 - **`GraphStore` is the only persistence boundary**: never call LadybugDB directly outside `store.py`.
 - **Graph schema** is authoritative in `graph/model.py`: node kinds (`File`, `Module`, `Function`, `Class`, `Method`, `Interface`, `Screen`); edge kinds (`DECLARES`, `IMPORTS`, `CALLS`, `EXTENDS`, `IMPLEMENTS`, `NAVIGATES_TO`).
 
+## Release packaging rules
+
+Every release **must** be fully usable on an air-gapped machine (no internet). This is non-negotiable.
+
+### What must be bundled in every release
+
+| Artifact | Location | Notes |
+|----------|----------|-------|
+| Embedding model | `release/vX.Y.Z/models/bge-small-en-v1.5/` | Platform-independent; use `klit-flow download-model` |
+| Parser binaries | `release/vX.Y.Z/parsers/<platform>/` | One subdirectory per platform (see below) |
+| Wheel | `release/vX.Y.Z/klit_flow-X.Y.Z-py3-none-any.whl` | Built with `python -m build` |
+| Sdist | `release/vX.Y.Z/klit_flow-X.Y.Z.tar.gz` | Built with `python -m build` |
+
+### Supported platforms (all must be present in parsers/)
+
+`macos-arm64`, `macos-x86_64`, `linux-x86_64`, `linux-aarch64`, `windows-x86_64`, `windows-aarch64`
+
+### How to build a release
+
+```bash
+# 0. Bump version in pyproject.toml and src/klit_flow/__init__.py
+# 1. Install release extras
+pip install -e ".[release]"
+
+# 2. Download parsers for all platforms
+klit-flow download-parsers --all-platforms --cache-dir release/vX.Y.Z/parsers
+
+# 3. Download the embedding model
+klit-flow download-model release/vX.Y.Z/models/bge-small-en-v1.5
+
+# 4. Build wheel + sdist
+python -m build --outdir release/vX.Y.Z
+
+# 5. Quality gate must pass before publishing
+ruff format --check . && ruff check . && pytest -q
+```
+
+### Runtime environment variables (users must set these on the target machine)
+
+| Variable | Points to |
+|----------|-----------|
+| `KLIT_FLOW_PARSER_CACHE_DIR` | `parsers/` root — platform subdir is auto-detected at runtime |
+| `KLIT_FLOW_MODEL_DIR` | `models/bge-small-en-v1.5/` directory |
+
+### Key rules
+
+- **Never** release without all 6 platform parser directories present.
+- **Never** release without the `models/bge-small-en-v1.5/` directory present.
+- Parser binaries are platform-specific compiled files (`.dylib`/`.so`/`.dll`) — do **not** assume binaries built on one OS work on another.
+- The embedding model must **not** include `pytorch_model.bin` or `onnx/` — only `model.safetensors` + tokenizer files (prevents SafeTensor header errors).
+- `KLIT_FLOW_MODEL_DIR` must use `local_files_only=True` in `SentenceTransformer` to prevent any HuggingFace network fallback.
+- `KLIT_FLOW_PARSER_CACHE_DIR` auto-picks `<dir>/<platform>/` before falling back to `<dir>/` directly.
+- Both env vars expand `~` via `Path.expanduser().resolve()` — never rely on the shell to expand them.
+
 ## Testing
 
 - Fixtures live in `fixtures/mini_app/` — a tiny sample app for the target platform with 2–4 screens and known edges.

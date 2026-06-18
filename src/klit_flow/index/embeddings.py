@@ -26,17 +26,23 @@ DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 _MODEL_DIR_ENV = "KLIT_FLOW_MODEL_DIR"
 
 
-def _resolve_model(model_name: str) -> str:
-    """Return a local path when KLIT_FLOW_MODEL_DIR is set, else the model id."""
+def _resolve_model(model_name: str) -> tuple[str, bool]:
+    """Return (model_path_or_id, local_only).
+
+    When KLIT_FLOW_MODEL_DIR is set and points to a valid directory, return
+    the expanded local path with ``local_only=True`` so sentence-transformers
+    never contacts HuggingFace.  Otherwise return the model id with
+    ``local_only=False``.
+    """
     env = os.environ.get(_MODEL_DIR_ENV, "").strip()
     if env:
-        p = Path(env)
+        p = Path(env).expanduser().resolve()
         if p.is_dir():
-            return str(p)
+            return str(p), True
         logger.warning(
             "KLIT_FLOW_MODEL_DIR %r is not a directory; falling back to HuggingFace", env
         )
-    return model_name
+    return model_name, False
 
 
 class Embedder:
@@ -62,10 +68,10 @@ class Embedder:
                 "Install it with: pip install sentence-transformers"
             ) from exc
 
-        resolved = _resolve_model(model_name)
+        resolved, local_only = _resolve_model(model_name)
         try:
-            logger.debug("Loading embedding model %r", resolved)
-            self._model = SentenceTransformer(resolved)
+            logger.debug("Loading embedding model %r (local_only=%s)", resolved, local_only)
+            self._model = SentenceTransformer(resolved, local_files_only=local_only)
             get_dim = (
                 getattr(self._model, "get_embedding_dimension", None)
                 or self._model.get_sentence_embedding_dimension

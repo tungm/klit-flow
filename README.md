@@ -96,7 +96,7 @@ Add the `export` line to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) so i
 
 ### From a release wheel
 
-The release folder includes pre-downloaded parser binaries and the embedding model — no internet connection is required on the target machine.
+The release folder contains everything needed to run klit-flow on an **air-gapped machine** — no internet connection required on the target computer.
 
 **Files in the release**
 
@@ -104,14 +104,17 @@ The release folder includes pre-downloaded parser binaries and the embedding mod
 klit_flow-1.0.0-py3-none-any.whl
 klit_flow-1.0.0.tar.gz
 models/
-└── bge-small-en-v1.5/        ← bundled embedding model (~130 MB)
+└── bge-small-en-v1.5/        <- embedding model (platform-independent, ~130 MB)
 parsers/
-├── tree_sitter_kotlin.dll    ← bundled tree-sitter parser binaries
-├── tree_sitter_java.dll        (one .dll/.so per supported language)
-└── …
+├── macos-arm64/               <- parser binaries, one subdirectory per platform
+├── macos-x86_64/
+├── linux-x86_64/
+├── linux-aarch64/
+├── windows-x86_64/
+└── windows-aarch64/
 ```
 
-Transfer the entire release folder to the target machine, then:
+Transfer the release folder to the target machine via USB or any file transfer, then:
 
 ```bash
 # 1. Install the wheel
@@ -120,21 +123,22 @@ pip install klit_flow-1.0.0-py3-none-any.whl
 # Install PyTorch (required by sentence-transformers)
 pip install torch
 
-# 2. Point klit-flow at the bundled parsers and model (adjust path as needed)
+# 2. Point klit-flow at the bundled parsers and model.
+#    KLIT_FLOW_PARSER_CACHE_DIR points to the parsers/ root — the correct
+#    platform subdirectory (e.g. macos-arm64/) is chosen automatically.
+#
+#    macOS / Linux — add to ~/.zshrc or ~/.bashrc:
 export KLIT_FLOW_PARSER_CACHE_DIR=/path/to/release/v1.0.0/parsers
 export KLIT_FLOW_MODEL_DIR=/path/to/release/v1.0.0/models/bge-small-en-v1.5
 
-# 3. Verify
+#    Windows (PowerShell — add to $PROFILE):
+$env:KLIT_FLOW_PARSER_CACHE_DIR = "C:\path\to\release\v1.0.0\parsers"
+$env:KLIT_FLOW_MODEL_DIR        = "C:\path\to\release\v1.0.0\models\bge-small-en-v1.5"
+
+# 3. Verify — no network calls occur
 klit-flow --help
+klit-flow analyze /path/to/app --platform android
 ```
-
-Add both `export` lines to your shell profile so they persist across sessions.
-
-> **Windows (PowerShell):**
-> ```powershell
-> $env:KLIT_FLOW_PARSER_CACHE_DIR = "C:\path\to\release\v1.0.0\parsers"
-> $env:KLIT_FLOW_MODEL_DIR        = "C:\path\to\release\v1.0.0\models\bge-small-en-v1.5"
-> ```
 
 > **Tip — if `klit-flow` is not found after install:**
 >
@@ -220,7 +224,7 @@ Each module and screen doc gains a 1–2 sentence description in its body.
 | `klit-flow serve [--port N]` | Start MCP server (stdio) + web portal (default port 5173) |
 | `klit-flow status` | Show index freshness, node/edge counts |
 | `klit-flow clean` | Remove `.klit-flow/` index directory for the current repo |
-| `klit-flow download-parsers [--cache-dir <dir>]` | Download tree-sitter parser binaries to the local cache |
+| `klit-flow download-parsers [--cache-dir <dir>] [--all-platforms]` | Download tree-sitter parser binaries; `--all-platforms` downloads for all OS/arch combinations |
 | `klit-flow download-model <dest> [--model <id>]` | Download the HuggingFace embedding model to a local directory |
 
 ### `analyze` options
@@ -235,7 +239,8 @@ Each module and screen doc gains a 1–2 sentence description in its body.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--cache-dir` | system default | Directory to store parser binaries; overrides `KLIT_FLOW_PARSER_CACHE_DIR` |
+| `--cache-dir` | system default | Root directory for parser binaries; overrides `KLIT_FLOW_PARSER_CACHE_DIR` |
+| `--all-platforms` | off | Download binaries for all 6 platforms into `<cache-dir>/<platform>/` subdirs; requires `pip install "klit-flow[release]"` |
 
 ### `download-model` options
 
@@ -250,7 +255,7 @@ Each module and screen doc gains a 1–2 sentence description in its body.
 
 | Variable | Description |
 |----------|-------------|
-| `KLIT_FLOW_PARSER_CACHE_DIR` | Path to a directory containing pre-downloaded tree-sitter parser binaries. When set, klit-flow reads parsers from here instead of the default system cache. Use this to point at the bundled `parsers/` folder from a release archive. |
+| `KLIT_FLOW_PARSER_CACHE_DIR` | Path to the parser cache root. klit-flow first checks for a `<dir>/<platform>/` subdirectory (e.g. `parsers/macos-arm64/`) and falls back to `<dir>/` directly. Point this at the `parsers/` folder from a release archive for fully offline operation. Populate with `klit-flow download-parsers --all-platforms --cache-dir <dir>`. |
 | `KLIT_FLOW_MODEL_DIR` | Path to a local directory containing the embedding model. When set, `sentence-transformers` loads the model from here instead of downloading from HuggingFace. Use this to point at the bundled `models/bge-small-en-v1.5/` folder from a release archive. |
 | `SSL_CERT_FILE` | CA bundle for tree-sitter parser downloads (used by `download-parsers`). Set this when behind a corporate TLS-inspection proxy. |
 | `REQUESTS_CA_BUNDLE` | CA bundle for HuggingFace model downloads (used by `download-model`). Set this when behind a corporate TLS-inspection proxy. |

@@ -2,6 +2,7 @@
 
 import logging
 import os
+import platform as _platform
 from pathlib import Path
 
 from tree_sitter import Language
@@ -26,13 +27,35 @@ _TS_GRAMMAR: dict[str, str] = {
 REQUIRED_PARSERS: frozenset[str] = frozenset(_TS_GRAMMAR.values())
 
 # If KLIT_FLOW_PARSER_CACHE_DIR is set, point the library at that directory
-# instead of the default system cache.  Set this to the bundled parsers/
-# folder from a release archive for fully offline operation:
+# instead of the default system cache.  The release archive stores parsers in
+# per-platform subdirectories:
 #
-#   KLIT_FLOW_PARSER_CACHE_DIR=/path/to/release/v1.0.0/parsers
+#   parsers/
+#     macos-arm64/
+#     macos-x86_64/
+#     linux-x86_64/
+#     linux-aarch64/
+#     windows-x86_64/
+#     windows-aarch64/
+#
+# Set KLIT_FLOW_PARSER_CACHE_DIR to the parsers/ root; the correct
+# platform subdirectory is chosen automatically at runtime.
 _PARSER_CACHE_ENV = "KLIT_FLOW_PARSER_CACHE_DIR"
 
 _configured = False
+
+
+def current_platform() -> str:
+    """Return the tree-sitter-language-pack platform identifier for this machine."""
+    system = _platform.system()
+    machine = _platform.machine().lower()
+    if system == "Darwin":
+        return "macos-arm64" if machine in ("arm64", "aarch64") else "macos-x86_64"
+    if system == "Linux":
+        return "linux-aarch64" if machine in ("aarch64", "arm64") else "linux-x86_64"
+    if system == "Windows":
+        return "windows-aarch64" if machine in ("aarch64", "arm64") else "windows-x86_64"
+    return f"{system.lower()}-{machine}"
 
 
 def _ensure_configured() -> None:
@@ -42,14 +65,16 @@ def _ensure_configured() -> None:
         return
     _configured = True
     env = os.environ.get(_PARSER_CACHE_ENV, "").strip()
-    if env:
-        p = Path(env)
-        if p.is_dir():
-            configure(PackConfig(cache_dir=str(p)))
-        else:
-            logger.warning(
-                "KLIT_FLOW_PARSER_CACHE_DIR %r is not a directory; using default cache", env
-            )
+    if not env:
+        return
+    base = Path(env).expanduser().resolve()
+    # Prefer <base>/<platform>/ (all-platforms release layout) over <base>/ directly.
+    plat_dir = base / current_platform()
+    chosen = plat_dir if plat_dir.is_dir() else base
+    if chosen.is_dir():
+        configure(PackConfig(cache_dir=str(chosen)))
+    else:
+        logger.warning("KLIT_FLOW_PARSER_CACHE_DIR %r is not a directory; using default cache", env)
 
 
 def get_ts_language(language: str) -> Language:

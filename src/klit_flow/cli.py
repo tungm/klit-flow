@@ -324,34 +324,45 @@ def status() -> None:
 
 @app.command(name="download-parsers")
 def download_parsers(
-    cache_dir: str = typer.Option(
-        "", "--cache-dir", help="Override the default parser cache directory."
+    cache_dir: str = typer.Option("", "--cache-dir", help="Directory to store parser binaries."),
+    all_platforms: bool = typer.Option(
+        False,
+        "--all-platforms",
+        help="Download parsers for all platforms (for building a cross-platform release).",
     ),
 ) -> None:
     """Download all required tree-sitter parsers to the local cache.
 
-    Run this once before using 'analyze'.  After the download succeeds klit-flow
-    works fully offline — no network access is needed during analysis.
+    Default: downloads parsers for the current platform only.
 
-    If you are behind a corporate proxy with TLS inspection, set the
-    SSL_CERT_FILE environment variable to your organisation's CA bundle before
-    running this command:
+    Use --all-platforms to download for every supported OS and architecture.
+    Parsers are stored in per-platform subdirectories under --cache-dir:
+
+    \b
+        klit-flow download-parsers --all-platforms --cache-dir ./release/v1.0.0/parsers
+        # creates: parsers/macos-arm64/, parsers/linux-x86_64/, etc.
+
+    If you are behind a corporate proxy with TLS inspection, set SSL_CERT_FILE
+    before running this command:
 
     \b
         SSL_CERT_FILE=/path/to/corp-ca.pem klit-flow download-parsers
     """
     import os
 
+    from klit_flow.parsing.registry import REQUIRED_PARSERS
+
+    if all_platforms:
+        _download_parsers_all_platforms(cache_dir or ".", REQUIRED_PARSERS)
+        return
+
     from tree_sitter_language_pack import cache_dir as get_cache_dir
     from tree_sitter_language_pack import configure, download, downloaded_languages
     from tree_sitter_language_pack.options import PackConfig
 
-    from klit_flow.parsing.registry import REQUIRED_PARSERS
-
     # --cache-dir flag > KLIT_FLOW_PARSER_CACHE_DIR env var > library default
     resolved_cache = cache_dir or os.environ.get("KLIT_FLOW_PARSER_CACHE_DIR", "").strip() or None
-    cfg = PackConfig(cache_dir=resolved_cache)
-    configure(cfg)
+    configure(PackConfig(cache_dir=resolved_cache))
 
     effective_cache = get_cache_dir()
     typer.echo(f"Parser cache: {effective_cache}")
@@ -376,6 +387,63 @@ def download_parsers(
         raise typer.Exit(1) from exc
 
     typer.echo(f"Downloaded {count} parser(s). klit-flow is ready for offline use.")
+
+
+def _download_parsers_all_platforms(dest: str, required: frozenset[str]) -> None:
+    """Download parser binaries for all platforms into <dest>/<platform>/."""
+    import io
+    import tarfile
+    import urllib.request
+
+    try:
+        import zstandard as zstd
+    except ImportError as exc:
+        typer.echo(
+            "Error: zstandard is required for --all-platforms.\n"
+            "Install it with: pip install zstandard",
+            err=True,
+        )
+        raise typer.Exit(1) from exc
+
+    import tree_sitter_language_pack as tslp
+    import tree_sitter_language_pack._native as _native
+
+    dm = _native.DownloadManager.new(tslp.__version__)
+    manifest = dm.fetch_manifest()
+
+    dest_path = Path(dest).expanduser().resolve()
+    dest_path.mkdir(parents=True, exist_ok=True)
+
+    for platform_name, bundle in manifest.platforms.items():
+        plat_dir = dest_path / platform_name
+        plat_dir.mkdir(exist_ok=True)
+
+        typer.echo(f"  [{platform_name}] downloading …")
+        try:
+            with urllib.request.urlopen(bundle.url) as resp:
+                raw = resp.read()
+        except Exception as exc:
+            typer.echo(f"  [{platform_name}] FAILED: {exc}", err=True)
+            continue
+
+        dctx = zstd.ZstdDecompressor()
+        with dctx.stream_reader(io.BytesIO(raw)) as reader:
+            decompressed = reader.read()
+
+        count = 0
+        with tarfile.open(fileobj=io.BytesIO(decompressed)) as tf:
+            for member in tf.getmembers():
+                fname = Path(member.name).name
+                stem = fname.split(".")[0]
+                lang = stem.removeprefix("libtree_sitter_").removeprefix("tree_sitter_")
+                if lang in required:
+                    member.name = fname  # flatten — strip leading ./
+                    tf.extract(member, path=plat_dir)
+                    count += 1
+
+        typer.echo(f"  [{platform_name}] {count} parser(s) -> {plat_dir}")
+
+    typer.echo(f"\nAll platforms written to {dest_path}")
 
 
 # ---------------------------------------------------------------------------
