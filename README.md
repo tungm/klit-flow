@@ -78,17 +78,17 @@ ruff format --check . && ruff check . && pytest -q
 klit-flow is fully offline after these two commands succeed:
 
 ```bash
-# Download tree-sitter parser binaries (~few MB total)
+# Download tree-sitter parser binaries to the default system cache
 klit-flow download-parsers
 
-# Download the embedding model (~130 MB)
+# Download the embedding model (~130 MB) to a local directory
 klit-flow download-model ~/.cache/klit-flow/models/bge-small-en-v1.5
 export KLIT_FLOW_MODEL_DIR=~/.cache/klit-flow/models/bge-small-en-v1.5
 ```
 
 Add the `export` line to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) so it persists across sessions.
 
-> **Behind a corporate proxy with TLS inspection?**  Set your CA bundle before running the download commands:
+> **Behind a corporate proxy with TLS inspection?** Set your CA bundle before running the download commands:
 > ```bash
 > export SSL_CERT_FILE=/path/to/corp-ca.pem        # tree-sitter parsers
 > export REQUESTS_CA_BUNDLE=/path/to/corp-ca.pem   # HuggingFace model
@@ -96,7 +96,7 @@ Add the `export` line to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) so i
 
 ### From a release wheel
 
-The release archive includes a pre-downloaded embedding model so no network access is required after installation.
+The release folder includes pre-downloaded parser binaries and the embedding model — no internet connection is required on the target machine.
 
 **Files in the release**
 
@@ -104,7 +104,11 @@ The release archive includes a pre-downloaded embedding model so no network acce
 klit_flow-1.0.0-py3-none-any.whl
 klit_flow-1.0.0.tar.gz
 models/
-└── bge-small-en-v1.5/   ← bundled embedding model (~130 MB)
+└── bge-small-en-v1.5/        ← bundled embedding model (~130 MB)
+parsers/
+├── tree_sitter_kotlin.dll    ← bundled tree-sitter parser binaries
+├── tree_sitter_java.dll        (one .dll/.so per supported language)
+└── …
 ```
 
 Transfer the entire release folder to the target machine, then:
@@ -116,17 +120,21 @@ pip install klit_flow-1.0.0-py3-none-any.whl
 # Install PyTorch (required by sentence-transformers)
 pip install torch
 
-# 2. Point klit-flow at the bundled model (adjust path as needed)
+# 2. Point klit-flow at the bundled parsers and model (adjust path as needed)
+export KLIT_FLOW_PARSER_CACHE_DIR=/path/to/release/v1.0.0/parsers
 export KLIT_FLOW_MODEL_DIR=/path/to/release/v1.0.0/models/bge-small-en-v1.5
 
-# 3. Download tree-sitter parser binaries (requires network, one-time)
-klit-flow download-parsers
-
-# 4. Verify
+# 3. Verify
 klit-flow --help
 ```
 
-> **Fully air-gapped machines:** Run `klit-flow download-parsers` on a machine that has internet access and the same OS/architecture, then copy the parser cache directory to the target machine. The cache location is printed by the command.
+Add both `export` lines to your shell profile so they persist across sessions.
+
+> **Windows (PowerShell):**
+> ```powershell
+> $env:KLIT_FLOW_PARSER_CACHE_DIR = "C:\path\to\release\v1.0.0\parsers"
+> $env:KLIT_FLOW_MODEL_DIR        = "C:\path\to\release\v1.0.0\models\bge-small-en-v1.5"
+> ```
 
 > **Tip — if `klit-flow` is not found after install:**
 >
@@ -202,6 +210,53 @@ Each module and screen doc gains a 1–2 sentence description in its body.
 
 ---
 
+## CLI reference
+
+| Command | Description |
+|---------|-------------|
+| `klit-flow analyze <path> --platform <p>` | Index a mobile app source tree and emit all artifacts |
+| `klit-flow query "<text>"` | Hybrid search (semantic + BM25) against the index |
+| `klit-flow flows [<screen>]` | List `NAVIGATES_TO` edges; optionally filter by screen name |
+| `klit-flow serve [--port N]` | Start MCP server (stdio) + web portal (default port 5173) |
+| `klit-flow status` | Show index freshness, node/edge counts |
+| `klit-flow clean` | Remove `.klit-flow/` index directory for the current repo |
+| `klit-flow download-parsers [--cache-dir <dir>]` | Download tree-sitter parser binaries to the local cache |
+| `klit-flow download-model <dest> [--model <id>]` | Download the HuggingFace embedding model to a local directory |
+
+### `analyze` options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--platform` | *(required)* | `android`, `ios`, `react_native`, or `flutter` |
+| `--summaries` | off | Generate NL summaries via a local Ollama model |
+| `--force` | off | Re-index even if an index already exists |
+
+### `download-parsers` options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--cache-dir` | system default | Directory to store parser binaries; overrides `KLIT_FLOW_PARSER_CACHE_DIR` |
+
+### `download-model` options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<dest>` | *(required)* | Local directory to download the model into |
+| `--model` | `BAAI/bge-small-en-v1.5` | HuggingFace model id |
+
+---
+
+## Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `KLIT_FLOW_PARSER_CACHE_DIR` | Path to a directory containing pre-downloaded tree-sitter parser binaries. When set, klit-flow reads parsers from here instead of the default system cache. Use this to point at the bundled `parsers/` folder from a release archive. |
+| `KLIT_FLOW_MODEL_DIR` | Path to a local directory containing the embedding model. When set, `sentence-transformers` loads the model from here instead of downloading from HuggingFace. Use this to point at the bundled `models/bge-small-en-v1.5/` folder from a release archive. |
+| `SSL_CERT_FILE` | CA bundle for tree-sitter parser downloads (used by `download-parsers`). Set this when behind a corporate TLS-inspection proxy. |
+| `REQUESTS_CA_BUNDLE` | CA bundle for HuggingFace model downloads (used by `download-model`). Set this when behind a corporate TLS-inspection proxy. |
+
+---
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -211,10 +266,10 @@ Each module and screen doc gains a 1–2 sentence description in its body.
 | `'source' is not recognized` (Windows) | Use `.venv\Scripts\Activate.ps1` (PowerShell) or `.venv\Scripts\activate.bat` (CMD) instead of `source` |
 | `Activate.ps1 cannot be loaded, running scripts is disabled` | Run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser` once in PowerShell, then retry |
 | `ModuleNotFoundError: No module named 'torch'` | `pip install torch` |
-| `Tree-sitter parser … is not cached locally` | Run `klit-flow download-parsers` once (requires network) |
+| `Tree-sitter parser … is not cached locally` | Set `KLIT_FLOW_PARSER_CACHE_DIR` to the bundled `parsers/` folder, or run `klit-flow download-parsers` (requires network) |
 | Certificate error during `download-parsers` | Set `SSL_CERT_FILE=/path/to/corp-ca.pem` before running the command |
 | Certificate error during `download-model` | Set `REQUESTS_CA_BUNDLE=/path/to/corp-ca.pem` before running the command |
-| Embedding model not loading | Set `KLIT_FLOW_MODEL_DIR` to the local model path (see Installation) |
+| Embedding model not loading | Set `KLIT_FLOW_MODEL_DIR` to the local model path (see Environment variables) |
 | `FileNotFoundError: No index found` on `serve` or `query` | Run `klit-flow analyze` first to build the index |
 
 ---

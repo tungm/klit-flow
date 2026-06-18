@@ -340,13 +340,17 @@ def download_parsers(
     \b
         SSL_CERT_FILE=/path/to/corp-ca.pem klit-flow download-parsers
     """
+    import os
+
     from tree_sitter_language_pack import cache_dir as get_cache_dir
     from tree_sitter_language_pack import configure, download, downloaded_languages
     from tree_sitter_language_pack.options import PackConfig
 
     from klit_flow.parsing.registry import REQUIRED_PARSERS
 
-    cfg = PackConfig(cache_dir=cache_dir if cache_dir else None)
+    # --cache-dir flag > KLIT_FLOW_PARSER_CACHE_DIR env var > library default
+    resolved_cache = cache_dir or os.environ.get("KLIT_FLOW_PARSER_CACHE_DIR", "").strip() or None
+    cfg = PackConfig(cache_dir=resolved_cache)
     configure(cfg)
 
     effective_cache = get_cache_dir()
