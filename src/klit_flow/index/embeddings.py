@@ -35,12 +35,25 @@ def _resolve_model(model_name: str) -> tuple[str, bool]:
     ``local_only=False``.
     """
     env = os.environ.get(_MODEL_DIR_ENV, "").strip()
+    logger.warning("[klit-flow] %s = %r", _MODEL_DIR_ENV, env or "(not set)")
+
     if env:
         p = Path(env).expanduser().resolve()
+        logger.warning("[klit-flow] model path resolved to: %s  exists=%s", p, p.is_dir())
         if p.is_dir():
+            contents = [f.name for f in p.iterdir()] if p.is_dir() else []
+            logger.warning("[klit-flow] model dir contents: %s", contents)
             return str(p), True
         logger.warning(
-            "KLIT_FLOW_MODEL_DIR %r is not a directory; falling back to HuggingFace", env
+            "[klit-flow] KLIT_FLOW_MODEL_DIR %r resolved to %s which is not a directory; "
+            "falling back to HuggingFace download",
+            env,
+            p,
+        )
+    else:
+        logger.warning(
+            "[klit-flow] KLIT_FLOW_MODEL_DIR not set; will download from HuggingFace. "
+            "Set KLIT_FLOW_MODEL_DIR to use the bundled offline model."
         )
     return model_name, False
 
@@ -69,19 +82,38 @@ class Embedder:
             ) from exc
 
         resolved, local_only = _resolve_model(model_name)
+        logger.warning(
+            "[klit-flow] loading embedding model resolved=%r local_files_only=%s",
+            resolved,
+            local_only,
+        )
         try:
-            logger.debug("Loading embedding model %r (local_only=%s)", resolved, local_only)
             self._model = SentenceTransformer(resolved, local_files_only=local_only)
             get_dim = (
                 getattr(self._model, "get_embedding_dimension", None)
                 or self._model.get_sentence_embedding_dimension
             )
             self._dim = get_dim()
+            logger.warning("[klit-flow] embedding model loaded OK, dim=%d", self._dim)
         except OSError as exc:
             logger.warning(
-                "Embedding model could not be loaded (%s). "
-                "Semantic search disabled; falling back to BM25-only.",
+                "[klit-flow] embedding model load FAILED (OSError): %s\n"
+                "  resolved path: %r\n"
+                "  local_files_only: %s\n"
+                "  If 'header too large': a corrupted file exists at the path above. "
+                "Delete it and re-run 'klit-flow download-model'.\n"
+                "  If 'no local files found': KLIT_FLOW_MODEL_DIR does not contain model weights. "
+                "Check the path above is the model directory (should contain model.safetensors).",
                 exc,
+                resolved,
+                local_only,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[klit-flow] embedding model load FAILED (%s): %s  resolved=%r",
+                type(exc).__name__,
+                exc,
+                resolved,
             )
 
     @property

@@ -64,17 +64,41 @@ def _ensure_configured() -> None:
     if _configured:
         return
     _configured = True
+
+    plat = current_platform()
+    logger.warning("[klit-flow] detected platform: %s", plat)
+
     env = os.environ.get(_PARSER_CACHE_ENV, "").strip()
+    logger.warning("[klit-flow] %s = %r", _PARSER_CACHE_ENV, env or "(not set)")
+
     if not env:
+        logger.warning(
+            "[klit-flow] KLIT_FLOW_PARSER_CACHE_DIR not set; using default system cache. "
+            "Set it to the bundled parsers/ directory for offline use."
+        )
         return
+
     base = Path(env).expanduser().resolve()
+    logger.warning("[klit-flow] parser cache base resolved to: %s  exists=%s", base, base.is_dir())
+
     # Prefer <base>/<platform>/ (all-platforms release layout) over <base>/ directly.
-    plat_dir = base / current_platform()
+    plat_dir = base / plat
+    logger.warning(
+        "[klit-flow] checking platform subdir: %s  exists=%s", plat_dir, plat_dir.is_dir()
+    )
+
     chosen = plat_dir if plat_dir.is_dir() else base
     if chosen.is_dir():
+        contents = [f.name for f in chosen.iterdir()]
+        logger.warning("[klit-flow] using parser cache: %s  files=%s", chosen, contents)
         configure(PackConfig(cache_dir=str(chosen)))
     else:
-        logger.warning("KLIT_FLOW_PARSER_CACHE_DIR %r is not a directory; using default cache", env)
+        logger.warning(
+            "[klit-flow] KLIT_FLOW_PARSER_CACHE_DIR %r resolved to %s which is not a directory; "
+            "using default system cache",
+            env,
+            base,
+        )
 
 
 def get_ts_language(language: str) -> Language:
