@@ -420,7 +420,17 @@ def download_model(
         snapshot_download(
             repo_id=model,
             local_dir=str(dest_path),
-            ignore_patterns=["*.msgpack", "flax_model*", "tf_model*", "rust_model*"],
+            ignore_patterns=[
+                # Alternative weight formats — model.safetensors is used
+                "pytorch_model.bin",
+                "pytorch_model*.bin",
+                "*.msgpack",
+                "flax_model*",
+                "tf_model*",
+                "rust_model*",
+                # ONNX runtime files — not used by sentence-transformers
+                "onnx/*",
+            ],
         )
     except Exception as exc:
         typer.echo(f"\nError: {exc}", err=True)

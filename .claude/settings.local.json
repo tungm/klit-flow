@@ -26,7 +26,8 @@
       "Bash(.venv/Scripts/pytest -q)",
       "Bash(.venv/Scripts/python -m build --outdir release/v1.0.0)",
       "Bash(.venv/Scripts/pip install:*)",
-      "Bash(.venv/Scripts/python -c \":*)"
+      "Bash(.venv/Scripts/python -c \":*)",
+      "Bash(rm -rf \"E:/projects/klit-flow/release/v1.0.0/models/bge-small-en-v1.5\")"
     ]
   }
 }
