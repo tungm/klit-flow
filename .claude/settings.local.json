@@ -20,7 +20,13 @@
       "Bash(cd:*)",
       "Bash(pytest tests/test_cli_flows.py -v)",
       "Bash(klit-flow analyze:*)",
-      "Bash(findstr /v \"UserWarning\\\\|warn\\(\\\\|torchvision\\\\|datapoints\\\\|transforms\\\\|HF_TOKEN\\\\|Loading weights\")"
+      "Bash(findstr /v \"UserWarning\\\\|warn\\(\\\\|torchvision\\\\|datapoints\\\\|transforms\\\\|HF_TOKEN\\\\|Loading weights\")",
+      "Bash(.venv/Scripts/ruff format:*)",
+      "Bash(.venv/Scripts/ruff check:*)",
+      "Bash(.venv/Scripts/pytest -q)",
+      "Bash(.venv/Scripts/python -m build --outdir release/v1.0.0)",
+      "Bash(.venv/Scripts/pip install:*)",
+      "Bash(.venv/Scripts/python -c \":*)"
     ]
   }
 }

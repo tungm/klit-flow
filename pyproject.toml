@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "klit-flow"
-version = "2.0.0"
+version = "1.0.0"
 description = "Local, offline code-intelligence tool for mobile app dependency and screen-flow graphs."
 readme = "README.md"
 license = "MIT"

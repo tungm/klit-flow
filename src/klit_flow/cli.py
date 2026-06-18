@@ -318,6 +318,120 @@ def status() -> None:
 
 
 # ---------------------------------------------------------------------------
+# download-parsers
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="download-parsers")
+def download_parsers(
+    cache_dir: str = typer.Option(
+        "", "--cache-dir", help="Override the default parser cache directory."
+    ),
+) -> None:
+    """Download all required tree-sitter parsers to the local cache.
+
+    Run this once before using 'analyze'.  After the download succeeds klit-flow
+    works fully offline — no network access is needed during analysis.
+
+    If you are behind a corporate proxy with TLS inspection, set the
+    SSL_CERT_FILE environment variable to your organisation's CA bundle before
+    running this command:
+
+    \b
+        SSL_CERT_FILE=/path/to/corp-ca.pem klit-flow download-parsers
+    """
+    from tree_sitter_language_pack import cache_dir as get_cache_dir
+    from tree_sitter_language_pack import configure, download, downloaded_languages
+    from tree_sitter_language_pack.options import PackConfig
+
+    from klit_flow.parsing.registry import REQUIRED_PARSERS
+
+    cfg = PackConfig(cache_dir=cache_dir if cache_dir else None)
+    configure(cfg)
+
+    effective_cache = get_cache_dir()
+    typer.echo(f"Parser cache: {effective_cache}")
+
+    already = set(downloaded_languages())
+    needed = sorted(REQUIRED_PARSERS - already)
+
+    if not needed:
+        typer.echo("All required parsers are already cached.")
+        raise typer.Exit(0)
+
+    typer.echo(f"Downloading {len(needed)} parser(s): {', '.join(needed)} …")
+    try:
+        count = download(needed)
+    except Exception as exc:
+        typer.echo(f"\nError: {exc}", err=True)
+        typer.echo(
+            "\nIf you see a certificate error, set SSL_CERT_FILE to your CA bundle:\n"
+            "  SSL_CERT_FILE=/path/to/corp-ca.pem klit-flow download-parsers",
+            err=True,
+        )
+        raise typer.Exit(1) from exc
+
+    typer.echo(f"Downloaded {count} parser(s). klit-flow is ready for offline use.")
+
+
+# ---------------------------------------------------------------------------
+# download-model
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="download-model")
+def download_model(
+    dest: str = typer.Argument(..., help="Directory to download the embedding model into."),
+    model: str = typer.Option(
+        "BAAI/bge-small-en-v1.5",
+        "--model",
+        help="HuggingFace model id to download.",
+    ),
+) -> None:
+    """Download the embedding model to a local directory for offline use.
+
+    Run this once when you have network access.  Afterwards point
+    KLIT_FLOW_MODEL_DIR at the downloaded folder and klit-flow will never
+    contact HuggingFace again:
+
+    \b
+        klit-flow download-model ./release/v1.0.0/models/bge-small-en-v1.5
+        KLIT_FLOW_MODEL_DIR=./release/v1.0.0/models/bge-small-en-v1.5 klit-flow analyze ...
+
+    If you are behind a corporate proxy with TLS inspection set
+    REQUESTS_CA_BUNDLE or SSL_CERT_FILE to your organisation's CA bundle.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise typer.BadParameter(
+            "huggingface_hub is required. Install it with: pip install huggingface-hub"
+        ) from exc
+
+    dest_path = Path(dest).resolve()
+    dest_path.mkdir(parents=True, exist_ok=True)
+
+    typer.echo(f"Downloading {model!r} → {dest_path} …")
+    try:
+        snapshot_download(
+            repo_id=model,
+            local_dir=str(dest_path),
+            ignore_patterns=["*.msgpack", "flax_model*", "tf_model*", "rust_model*"],
+        )
+    except Exception as exc:
+        typer.echo(f"\nError: {exc}", err=True)
+        typer.echo(
+            "\nIf you see a certificate error, set REQUESTS_CA_BUNDLE to your CA bundle:\n"
+            "  REQUESTS_CA_BUNDLE=/path/to/corp-ca.pem klit-flow download-model <dest>",
+            err=True,
+        )
+        raise typer.Exit(1) from exc
+
+    typer.echo(f"Model cached at: {dest_path}")
+    typer.echo(f"Set KLIT_FLOW_MODEL_DIR={dest_path} before running klit-flow.")
+
+
+# ---------------------------------------------------------------------------
 # clean
 # ---------------------------------------------------------------------------
 
