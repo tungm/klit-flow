@@ -245,6 +245,11 @@ def flows(
 @app.command()
 def serve(
     port: int = typer.Option(5173, "--port", help="Web portal port."),
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        help="Web portal bind address. Use 0.0.0.0 to expose it (e.g. inside Docker).",
+    ),
 ) -> None:
     """Start the MCP server (stdio) and the web portal on --port."""
     import threading
@@ -270,11 +275,12 @@ def serve(
     web_app = create_web_app(store, bm25, embedder)
     mcp = create_server(store, bm25, embedder)
 
-    config = uvicorn.Config(web_app, host="127.0.0.1", port=port, log_level="warning")
+    config = uvicorn.Config(web_app, host=host, port=port, log_level="warning")
     uv_server = uvicorn.Server(config)
     web_thread = threading.Thread(target=uv_server.run, daemon=True)
     web_thread.start()
-    typer.echo(f"Web portal → http://127.0.0.1:{port}", err=True)
+    display_host = "127.0.0.1" if host == "0.0.0.0" else host
+    typer.echo(f"Web portal → http://{display_host}:{port}", err=True)
 
     try:
         mcp.run(transport="stdio")

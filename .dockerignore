@@ -1,0 +1,36 @@
+# Keep the build context small and reproducible.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# klit-flow index output
+.klit-flow/
+
+# Release archives (parsers/model are downloaded during the image build)
+release/
+
+# Tools / caches
+.ruff_cache/
+.pytest_cache/
+*.lock
+
+# VCS / IDE
+.git/
+.github/
+.idea/
+.vscode/
+
+# Docs not needed inside the image
+PLAN.md
+fixtures/
+tests/

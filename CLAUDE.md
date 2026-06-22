@@ -33,9 +33,24 @@ klit-flow analyze <path> --platform <android|ios|react_native|flutter>
 # Other CLI commands
 klit-flow query "<text>"   # hybrid search
 klit-flow flows [<screen>] # list NAVIGATES_TO edges; filter by screen name
-klit-flow serve [--port N] # start MCP server (stdio) + web portal at http://127.0.0.1:N (default 5173)
+klit-flow serve [--port N] [--host H] # start MCP server (stdio) + web portal (default 127.0.0.1:5173; use --host 0.0.0.0 in Docker)
 klit-flow status           # index freshness
 klit-flow clean            # remove .klit-flow/ for the repo
+```
+
+### Docker
+
+A self-contained image is provided (`Dockerfile`, `docker-compose.yml`). Parsers and the embedding model are baked in at build time, so the container makes **no network calls at runtime**.
+
+```bash
+# Build
+docker build -t klit-flow .
+
+# Index a repo mounted at /workspace
+docker run --rm -v "$(pwd)/my-app:/workspace" klit-flow analyze /workspace --platform android
+
+# Serve the portal (must bind 0.0.0.0 to be reachable from the host)
+docker run --rm -p 5173:5173 -v "$(pwd)/my-app:/workspace" klit-flow serve --host 0.0.0.0
 ```
 
 ## How we work

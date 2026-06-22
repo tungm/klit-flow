@@ -145,6 +145,73 @@ klit-flow analyze /path/to/app --platform android
 > - **macOS:** `export PATH="$HOME/Library/Python/3.11/bin:$PATH"` (add to `~/.zshrc`)
 > - **Windows:** ensure the Python `Scripts\` folder is on your PATH, or use the virtual environment — `klit-flow` will be available while it is active.
 
+### With Docker
+
+The Docker image is **fully self-contained**: the tree-sitter parser binaries and the embedding model are baked in at build time, so the container makes **no network calls at runtime** — consistent with klit-flow's offline guarantee. This is the quickest way to run klit-flow without installing Python, PyTorch, or the parsers/model yourself.
+
+**1. Build the image** (one-time, requires network):
+
+```bash
+docker build -t klit-flow .
+```
+
+**2. Index a repository** — mount it into the container at `/workspace`:
+
+```bash
+# macOS / Linux
+docker run --rm -v "$(pwd)/my-app:/workspace" klit-flow \
+    analyze /workspace --platform android
+
+# Windows (PowerShell)
+docker run --rm -v "${PWD}\my-app:/workspace" klit-flow `
+    analyze /workspace --platform android
+```
+
+The index is written to `.klit-flow/` **inside the mounted repo**, so it persists on the host between runs.
+
+**3. Run any other CLI command** the same way:
+
+```bash
+docker run --rm -v "$(pwd)/my-app:/workspace" klit-flow query "authentication screen"
+docker run --rm -v "$(pwd)/my-app:/workspace" klit-flow flows AuthActivity
+docker run --rm -v "$(pwd)/my-app:/workspace" klit-flow status
+```
+
+**4. Serve the web portal + MCP server** — bind to `0.0.0.0` so the host can reach it, and publish the port:
+
+```bash
+docker run --rm -p 5173:5173 -v "$(pwd)/my-app:/workspace" klit-flow \
+    serve --host 0.0.0.0
+```
+
+Then open **http://127.0.0.1:5173** on the host.
+
+> **Note:** `serve` defaults to binding `127.0.0.1`, which is *not* reachable from outside the container. Always pass `--host 0.0.0.0` when running `serve` in Docker.
+
+#### Using docker compose
+
+A `docker-compose.yml` is provided for the portal workflow. Point `APP_PATH` at the repo to analyze:
+
+```bash
+# Index once
+APP_PATH=/path/to/my-app docker compose run --rm klit-flow analyze /workspace --platform android
+
+# Start the portal at http://127.0.0.1:5173
+APP_PATH=/path/to/my-app docker compose up
+```
+
+#### Optional: NL summaries via Ollama
+
+`--summaries` needs a local Ollama instance. Run Ollama on the host and let the container reach it via `host.docker.internal`:
+
+```bash
+docker run --rm \
+    --add-host host.docker.internal:host-gateway \
+    -e OLLAMA_HOST=http://host.docker.internal:11434 \
+    -v "$(pwd)/my-app:/workspace" klit-flow \
+    analyze /workspace --platform android --summaries
+```
+
 ---
 
 ## Quick start
@@ -178,8 +245,9 @@ klit-flow flows AuthActivity
 ### 4. Expose to AI agents via MCP
 
 ```bash
-klit-flow serve          # starts the MCP server (stdio) + web portal
-klit-flow serve --port 8080   # custom port (default: 5173)
+klit-flow serve                    # starts the MCP server (stdio) + web portal
+klit-flow serve --port 8080        # custom port (default: 5173)
+klit-flow serve --host 0.0.0.0     # bind on all interfaces (needed inside Docker)
 ```
 
 Open **http://127.0.0.1:5173** in a browser to get the graph visualiser:
@@ -221,7 +289,7 @@ Each module and screen doc gains a 1–2 sentence description in its body.
 | `klit-flow analyze <path> --platform <p>` | Index a mobile app source tree and emit all artifacts |
 | `klit-flow query "<text>"` | Hybrid search (semantic + BM25) against the index |
 | `klit-flow flows [<screen>]` | List `NAVIGATES_TO` edges; optionally filter by screen name |
-| `klit-flow serve [--port N]` | Start MCP server (stdio) + web portal (default port 5173) |
+| `klit-flow serve [--port N] [--host H]` | Start MCP server (stdio) + web portal (default `127.0.0.1:5173`; use `--host 0.0.0.0` in Docker) |
 | `klit-flow status` | Show index freshness, node/edge counts |
 | `klit-flow clean` | Remove `.klit-flow/` index directory for the current repo |
 | `klit-flow download-parsers [--cache-dir <dir>] [--all-platforms]` | Download tree-sitter parser binaries; `--all-platforms` downloads for all OS/arch combinations |

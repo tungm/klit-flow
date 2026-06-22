@@ -1,0 +1,23 @@
+# Convenience compose file for running the klit-flow web portal + MCP server.
+#
+# Usage:
+#   1. Point APP_PATH at the repo you want to analyze (defaults to ./my-app).
+#   2. Index it once:
+#        APP_PATH=/path/to/my-app docker compose run --rm klit-flow \
+#            analyze /workspace --platform android
+#   3. Start the portal (http://127.0.0.1:5173):
+#        APP_PATH=/path/to/my-app docker compose up
+#
+# The index is written to .klit-flow/ inside the mounted repo, so it persists
+# on the host between runs.
+
+services:
+  klit-flow:
+    build: .
+    image: klit-flow
+    ports:
+      - "5173:5173"
+    volumes:
+      - "${APP_PATH:-./my-app}:/workspace"
+    # Bind to 0.0.0.0 so the portal is reachable from the host.
+    command: ["serve", "--host", "0.0.0.0"]
