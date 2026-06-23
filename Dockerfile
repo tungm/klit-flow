@@ -28,6 +28,23 @@ ENV KLIT_FLOW_PARSER_CACHE_DIR=/opt/klit-flow/parsers \
     PIP_NO_CACHE_DIR=1 \
     PYTHONUNBUFFERED=1
 
+# ── Corporate TLS interception ───────────────────────────────────────────────
+# Behind a proxy that re-signs HTTPS, every download below (pip, PyTorch index,
+# tree-sitter parsers, HuggingFace model) needs your company root CA to be
+# trusted. Drop one or more PEM-encoded ``*.crt`` files into ``./certs/`` next
+# to this Dockerfile and they are installed into the system trust store at
+# build time. With only the placeholder ``.gitkeep`` present this is a no-op,
+# so the image still builds normally outside a corporate network.
+COPY certs/ /usr/local/share/ca-certificates/
+RUN update-ca-certificates
+
+# Point pip and every requests/urllib/curl-based tool at the combined system
+# bundle, which now includes the corporate CA (and all public CAs).
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+
 WORKDIR /src
 
 # Copy only what is needed to install the package first, to maximise layer caching.

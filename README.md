@@ -155,6 +155,14 @@ The Docker image is **fully self-contained**: the tree-sitter parser binaries an
 docker build -t klit-flow .
 ```
 
+> **Behind a corporate proxy with TLS inspection?** The build downloads from PyPI, the PyTorch index, GitHub (parsers), and HuggingFace (model), all of which fail certificate verification if your proxy re-signs HTTPS. Export your company root CA as a PEM file and drop it into the [`certs/`](certs/) folder before building:
+> ```bash
+> # one .crt per certificate, PEM-encoded (-----BEGIN CERTIFICATE-----)
+> cp /path/to/corp-root-ca.crt certs/
+> docker build -t klit-flow .
+> ```
+> The Dockerfile installs every `certs/*.crt` into the image's system trust store (`update-ca-certificates`) and points `pip`, `requests`, `urllib`, and `curl` at the combined bundle, so all download steps succeed. With no cert present the step is a harmless no-op. CA *public* certificates are not secrets — never place private keys there.
+
 **2. Index a repository** — mount it into the container at `/workspace`:
 
 ```bash
