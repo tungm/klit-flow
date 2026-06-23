@@ -101,8 +101,8 @@ The release folder contains everything needed to run klit-flow on an **air-gappe
 **Files in the release**
 
 ```
-klit_flow-1.0.0-py3-none-any.whl
-klit_flow-1.0.0.tar.gz
+klit_flow-1.1.0-py3-none-any.whl
+klit_flow-1.1.0.tar.gz
 models/
 └── bge-small-en-v1.5/        <- embedding model (platform-independent, ~130 MB)
 parsers/
@@ -118,7 +118,7 @@ Transfer the release folder to the target machine via USB or any file transfer, 
 
 ```bash
 # 1. Install the wheel
-pip install klit_flow-1.0.0-py3-none-any.whl
+pip install klit_flow-1.1.0-py3-none-any.whl
 
 # Install PyTorch (required by sentence-transformers)
 pip install torch
@@ -128,12 +128,12 @@ pip install torch
 #    platform subdirectory (e.g. macos-arm64/) is chosen automatically.
 #
 #    macOS / Linux — add to ~/.zshrc or ~/.bashrc:
-export KLIT_FLOW_PARSER_CACHE_DIR=/path/to/release/v1.0.0/parsers
-export KLIT_FLOW_MODEL_DIR=/path/to/release/v1.0.0/models/bge-small-en-v1.5
+export KLIT_FLOW_PARSER_CACHE_DIR=/path/to/release/v1.1.0/parsers
+export KLIT_FLOW_MODEL_DIR=/path/to/release/v1.1.0/models/bge-small-en-v1.5
 
 #    Windows (PowerShell — add to $PROFILE):
-$env:KLIT_FLOW_PARSER_CACHE_DIR = "C:\path\to\release\v1.0.0\parsers"
-$env:KLIT_FLOW_MODEL_DIR        = "C:\path\to\release\v1.0.0\models\bge-small-en-v1.5"
+$env:KLIT_FLOW_PARSER_CACHE_DIR = "C:\path\to\release\v1.1.0\parsers"
+$env:KLIT_FLOW_MODEL_DIR        = "C:\path\to\release\v1.1.0\models\bge-small-en-v1.5"
 
 # 3. Verify — no network calls occur
 klit-flow --help
