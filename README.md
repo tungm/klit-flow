@@ -251,9 +251,35 @@ klit-flow serve --host 0.0.0.0     # bind on all interfaces (needed inside Docke
 ```
 
 Open **http://127.0.0.1:5173** in a browser to get the graph visualiser:
-- **Graph tab** — force-directed canvas graph; drag nodes, zoom/pan, click to inspect.
+- **Dependencies tab** — force-directed canvas graph; drag nodes, zoom/pan, click to inspect.
+- **Screen Flows tab** — canvas of `NAVIGATES_TO` edges; click a screen for its outbound navigation and API calls.
 - **Flows tab** — table of all `NAVIGATES_TO` edges; click any row to filter by screen.
+- **Named Flows tab** — create, rename, edit, delete your own named screen sequences, and search them by sequence (see below).
 - **Search tab** — type in the header bar for live hybrid search; click a result to jump to its node.
+
+#### Named flows
+
+A **named flow** is a human-curated set of screen paths you label yourself — for example `Login flow = AuthActivity → Dashboard → Profile`. Unlike the auto-detected `NAVIGATES_TO` edges, named flows are authored by you.
+
+A flow can **branch**. A single named flow holds one or more *branches*, each an ordered path, which typically share a common prefix:
+
+```
+Checkout
+├─ Cart → Address → Payment → Confirmation   (branch 1)
+└─ Cart → Address → SavedCards               (branch 2)
+```
+
+In the **Named Flows** tab, a flow is built as a **tree** so branches share their common prefix:
+- **Build** a flow by giving it a name and adding screens one at a time. The dropdown only offers screens the analyzer detected as real navigation destinations of the *currently selected* screen, so every path follows actual `NAVIGATES_TO` edges.
+- **Branch** by **clicking a screen in the tree** to select it, then adding the next screen — it becomes a child of the selected screen. Click an earlier screen and add a different next screen to create a second branch from that point; the shared prefix is stored once. Use **Add separate root** to start an unconnected path.
+- **Remove selected** drops the selected screen and everything after it; **Clear all** empties the tree.
+- **Edit / rename / delete** any saved flow (editing rebuilds the tree from the saved branches).
+- **Search** by typing a screen sequence (separate names with `>`, `->`, or `,`, e.g. `B > C`). A flow matches when **any one root-to-leaf path** contains the queried screens **in order, gaps allowed** — so searching `B → C` returns both `A → B → C` and `B → C → D`, and `A → C` matches `A → B → C`. Matching is case-insensitive. (A sequence spanning two different branches, e.g. `C1 → C2`, does not match.)
+- **Export / Import** with the buttons in the filter row:
+  - **Export** downloads `named-flows.json` containing every flow with its branches and screens in order. Each screen is enriched with its direct **dependencies** (1-hop non-navigation edges from the screen's class/file) and the **APIs it calls** (API/service/repository nodes reachable within 5 hops). This is a snapshot for sharing or backup — re-importing ignores the enrichment.
+  - **Import** loads an exported file and **appends** its flows (it does not replace existing ones). Navigation-edge validation is skipped on import, so a file exported from one repo can be imported even if the current graph differs.
+
+Named flows are saved to `.klit-flow/named_flows.json` inside the target repo, so they **persist across re-indexing** (`analyze --force`) and are removed only by `klit-flow clean`.
 
 MCP tools available: `query`, `context`, `impact`, `flows`, `cypher`.
 
@@ -360,6 +386,8 @@ All artifacts are written to `.klit-flow/out/` inside the target repo:
 | `diagrams/flows.mmd` | Mermaid flowchart of screen navigation |
 
 Frontmatter makes these dual-purpose: humans read the body, RAG pipelines index the structured fields.
+
+All file paths in the index (graph DB, `graph.json`, docs, and named-flow exports) are stored **relative to the project root** (the directory containing `.klit-flow`), so you can move or rename the project folder without re-indexing and without breaking the data.
 
 ---
 

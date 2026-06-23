@@ -79,6 +79,10 @@ walk → parse → resolve → (flows) → persist → index → emit
 
 Index artifacts are written to `.klit-flow/` inside the target repo (gitignored). Output docs go to `.klit-flow/out/`.
 
+All `file_path` values are stored **relative to the project root** (the directory containing `.klit-flow`), as POSIX paths. `analyze` relativizes node/edge paths (`_relativize_nodes`/`_relativize_edges` in `cli.py`) just before persist/index/emit, so the whole project — graph DB, search index, emitted docs, and named-flow exports — can be moved without breaking the data. The walker reads from absolute paths; only the persisted/displayed paths are relative.
+
+**Named flows** (`named_flows.py`) are user-authored, possibly **branching** screen flows created/edited in the web portal. A flow holds one or more *branches* (each an ordered path; branches typically share a prefix). They are persisted to `.klit-flow/named_flows.json` (a plain JSON file, **not** the graph DB) so they survive `analyze --force`, which deletes and rebuilds the graph DB. Legacy single-path records (a flat `screens` list) are migrated to a one-branch flow on load. The module is framework-agnostic; the web surface validates that consecutive screens within each branch are connected by real `NAVIGATES_TO` edges before saving, and search matches a queried screen sequence as an ordered subsequence (gaps allowed, case-insensitive) of **any one branch**.
+
 ## Architecture rules
 
 - **Typed everything**: pydantic v2 models for config, nodes, and edges. No bare dicts across module boundaries.

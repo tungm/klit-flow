@@ -19,17 +19,65 @@ Thread safety is provided by the ``threading.Lock`` inside ``LadybugGraphStore``
 from __future__ import annotations
 
 import logging
+import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 from klit_flow.graph.store import GraphStore, parse_conditions_json
 from klit_flow.index.bm25 import BM25Index
 from klit_flow.index.search import hybrid_search
+from klit_flow.named_flows import NamedFlow, NamedFlowBranch, NamedFlowScreen, NamedFlowStore
 
 logger = logging.getLogger(__name__)
+
+# Substrings used to flag API/service/client nodes when tracing a screen's calls.
+_API_KEYWORDS = {"api", "service", "repository", "client", "http", "retrofit", "volley"}
+
+# Current export schema version (bumped if the export shape changes).
+_EXPORT_VERSION = 1
+
+
+class _FlowCreate(BaseModel):
+    """Request body for creating a named flow."""
+
+    name: str
+    branches: list[NamedFlowBranch]
+
+
+class _FlowUpdate(BaseModel):
+    """Request body for updating a named flow (any field optional)."""
+
+    name: str | None = None
+    branches: list[NamedFlowBranch] | None = None
+
+
+class _ScreenImport(BaseModel):
+    """A screen entry in an import file (enrichment fields are ignored)."""
+
+    id: str
+    name: str
+
+
+class _BranchImport(BaseModel):
+    label: str = ""
+    screens: list[_ScreenImport]
+
+
+class _FlowImport(BaseModel):
+    name: str
+    branches: list[_BranchImport]
+
+
+class _ImportPayload(BaseModel):
+    """Body of POST /api/named-flows/import — the shape produced by export."""
+
+    flows: list[_FlowImport]
+
 
 # ---------------------------------------------------------------------------
 # Embedded SPA (no CDN, fully offline)
@@ -130,6 +178,41 @@ _SPA_HTML = """\
     .cond-cell{font-size:.78rem;color:#94a3b8;font-style:italic;max-width:200px;
                white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
+    /* Named Flows builder */
+    .nf-builder{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+                padding:14px 16px;margin-bottom:18px;max-width:760px}
+    .nf-builder h3{font-size:.78rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;
+                   color:var(--muted);margin-bottom:10px}
+    .nf-builder input,.nf-builder select{background:var(--bg);border:1px solid var(--border);
+                   color:var(--text);padding:6px 10px;border-radius:6px;font-size:.83rem;outline:none}
+    .nf-builder input:focus,.nf-builder select:focus{border-color:var(--accent)}
+    #nf-name{width:100%;margin-bottom:10px}
+    .nf-where{font-size:.74rem;color:var(--muted);margin-bottom:6px}
+    #nf-tree{min-height:30px;border:1px dashed var(--border);border-radius:6px;
+             padding:10px;margin-bottom:10px}
+    .nf-tnode{display:flex;align-items:center;gap:6px;margin:2px 0}
+    .nf-tbtn{background:rgba(124,58,237,.13);border:1px solid var(--accent);color:var(--accent-l);
+             padding:3px 11px;border-radius:14px;font-size:.78rem;font-weight:500;cursor:pointer}
+    .nf-tbtn:hover{background:rgba(124,58,237,.28)}
+    .nf-tbtn.sel{background:var(--accent);color:#fff}
+    .nf-tkids{margin-left:16px;border-left:1px solid var(--border);padding-left:12px}
+    .nf-trm{background:none;border:none;color:var(--muted);cursor:pointer;font-size:.85rem;line-height:1}
+    .nf-trm:hover{color:#f87171}
+    .nf-add-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+    .nf-add-row select{flex:1;min-width:160px}
+    .nf-builder button{background:var(--bg);border:1px solid var(--border);color:var(--text);
+                       padding:6px 12px;border-radius:6px;font-size:.8rem;cursor:pointer}
+    .nf-builder button:hover{border-color:var(--accent)}
+    .nf-builder button:disabled{opacity:.4;cursor:not-allowed}
+    #nf-save{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+    #nf-save:hover{background:var(--accent-l)}
+    .nf-actions{display:flex;align-items:center;gap:12px}
+    #nf-msg{font-size:.8rem;color:var(--muted)}
+    .nf-mini{background:var(--bg);border:1px solid var(--border);color:var(--muted);
+             padding:3px 9px;border-radius:5px;font-size:.74rem;cursor:pointer;margin-right:4px}
+    .nf-mini:hover{color:var(--text);border-color:var(--accent)}
+    .nf-flow-branch{display:block;color:#94a3b8;padding:1px 0}
+
     /* Screen Flows sidebar */
     #scr-sidebar{width:0;background:var(--surface);border-left:1px solid var(--border);
                  overflow:hidden;transition:width .2s ease;flex-shrink:0}
@@ -177,6 +260,7 @@ _SPA_HTML = """\
     <button class="tab active" data-view="deps">Dependencies</button>
     <button class="tab" data-view="screens">Screen Flows</button>
     <button class="tab" data-view="flows">Flows</button>
+    <button class="tab" data-view="named">Named Flows</button>
     <button class="tab" data-view="search">Search</button>
   </nav>
   <input id="search-input" type="search" placeholder="Search symbols\u2026" autocomplete="off">
@@ -251,6 +335,42 @@ _SPA_HTML = """\
     <table>
       <thead><tr><th>From</th><th>To</th><th>Trigger</th><th>Condition</th><th>Conf</th></tr></thead>
       <tbody id="flows-body"></tbody>
+    </table>
+  </div>
+
+  <!-- ── Named Flows ── -->
+  <div id="named-view" class="view tv" style="display:none">
+    <h2>Named Flows</h2>
+
+    <div class="nf-builder">
+      <h3 id="nf-builder-title">Create a flow</h3>
+      <input id="nf-name" type="text" placeholder="Flow name (e.g. Login flow)" autocomplete="off">
+      <div class="nf-where" id="nf-where">Add a starting screen.</div>
+      <div id="nf-tree"></div>
+      <div class="nf-add-row">
+        <select id="nf-next"></select>
+        <button id="nf-add">Add screen</button>
+        <button id="nf-remove">Remove selected</button>
+        <button id="nf-deselect" title="Deselect so you can add a separate starting screen">Add separate root</button>
+        <button id="nf-clear">Clear all</button>
+      </div>
+      <div class="nf-actions">
+        <button id="nf-save">Save flow</button>
+        <button id="nf-cancel" style="display:none">Cancel edit</button>
+        <span id="nf-msg"></span>
+      </div>
+    </div>
+
+    <div class="fr">
+      <input id="nf-search" type="search" placeholder="Search by sequence, e.g. B &gt; C" autocomplete="off">
+      <button id="nf-search-reset">All</button>
+      <button id="nf-export" title="Download all named flows as JSON (with each screen's dependencies and called APIs)">Export</button>
+      <button id="nf-import-btn" title="Import named flows from an exported JSON file">Import</button>
+      <input id="nf-import-file" type="file" accept="application/json,.json" style="display:none">
+    </div>
+    <table>
+      <thead><tr><th>Name</th><th>Branches</th><th>Actions</th></tr></thead>
+      <tbody id="nf-body"><tr><td colspan="3" class="empty-td">Loading…</td></tr></tbody>
     </table>
   </div>
 
@@ -754,7 +874,7 @@ function scrFit(){
 // ════════════════════════════════════════════════════════════════════════════════
 // ── VIEWS ────────────────────────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════════════════════
-const VIEWS=['deps','screens','flows','search'];
+const VIEWS=['deps','screens','flows','named','search'];
 function showView(name){
   VIEWS.forEach(v=>{
     const el=document.getElementById(v+'-view');
@@ -766,6 +886,7 @@ function showView(name){
   document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.view===name));
   if(name==='screens')loadScreenFlows();
   if(name==='flows')loadFlows();
+  if(name==='named')loadNamedFlows();
 }
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>showView(b.dataset.view)));
 
@@ -797,6 +918,254 @@ async function loadFlows(screen=''){
 function showFlowFor(s){document.getElementById('flows-q').value=s;loadFlows(s)}
 document.getElementById('flows-q').addEventListener('input',e=>{const v=e.target.value.trim();loadFlows(v||'')});
 document.getElementById('flows-reset').addEventListener('click',()=>{document.getElementById('flows-q').value='';loadFlows()});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ── NAMED FLOWS ─────────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════════
+// A flow is a tree of screens. nfTree is a forest of nodes
+// {uid,id,name,children:[]}; root-to-leaf paths become the persisted branches,
+// so branches sharing a prefix share tree nodes. nfSel is the uid of the screen
+// new screens are added under (null = add a starting/root screen).
+let nfTree=[],nfSel=null,nfUidCt=0,nfEditingId=null,nfCache={},nfInit=false;
+function nfUid(){return 'n'+(++nfUidCt)}
+
+function nfScreens(){return allNodes.filter(n=>n.kind==='Screen').sort((a,b)=>a.name.localeCompare(b.name))}
+function nfDestinations(srcId){
+  const dst=new Set(allEdges.filter(e=>e.type==='NAVIGATES_TO'&&e.src===srcId).map(e=>e.dst));
+  return nfScreens().filter(n=>dst.has(n.id));
+}
+function nfFind(uid,nodes){
+  for(const n of (nodes||nfTree)){
+    if(n.uid===uid)return n;
+    const f=nfFind(uid,n.children);if(f)return f;
+  }
+  return null;
+}
+function nfRemoveUid(uid,nodes){
+  const arr=nodes||nfTree;
+  const i=arr.findIndex(n=>n.uid===uid);
+  if(i>=0){arr.splice(i,1);return true}
+  for(const n of arr){if(nfRemoveUid(uid,n.children))return true}
+  return false;
+}
+function nfRefreshNext(){
+  const sel=document.getElementById('nf-next');
+  const node=nfSel?nfFind(nfSel):null;
+  const opts=node?nfDestinations(node.id):nfScreens();
+  if(opts.length){
+    sel.innerHTML=opts.map(n=>`<option value="${esc(n.id)}">${esc(n.name)}</option>`).join('');
+    sel.disabled=false;document.getElementById('nf-add').disabled=false;
+  }else{
+    sel.innerHTML=`<option value="">${node?'(no navigable next screen)':'(no screens found)'}</option>`;
+    sel.disabled=true;document.getElementById('nf-add').disabled=true;
+  }
+  const where=document.getElementById('nf-where');
+  if(node)where.textContent='Adding next screens after: '+node.name+'  (click another screen to change where, or "Add separate root").';
+  else if(nfTree.length)where.textContent='Click a screen to add the next one after it, or add a separate starting screen.';
+  else where.textContent='Add a starting screen.';
+}
+function nfRenderNodes(nodes){
+  return nodes.map(n=>{
+    const sel=n.uid===nfSel?' sel':'';
+    const kids=n.children.length?`<div class="nf-tkids">${nfRenderNodes(n.children)}</div>`:'';
+    return`<div class="nf-tnode">
+      <button class="nf-tbtn${sel}" onclick="nfSelect('${n.uid}')">${esc(n.name)}</button>
+      <button class="nf-trm" title="Remove this screen and everything after it" onclick="nfRemove('${n.uid}')">✕</button>
+    </div>${kids}`;
+  }).join('');
+}
+function nfRenderTree(){
+  const c=document.getElementById('nf-tree');
+  c.innerHTML=nfTree.length?nfRenderNodes(nfTree):'<span class="none">No screens yet — add a starting screen below.</span>';
+}
+function nfMsg(t){document.getElementById('nf-msg').textContent=t||''}
+async function loadNamedFlows(){
+  await ensureGraph();
+  if(!nfInit){nfRenderTree();nfRefreshNext();nfInit=true}
+  nfList();
+}
+function nfSelect(uid){
+  nfSel=(nfSel===uid)?null:uid;  // click again to deselect
+  nfMsg('');nfRenderTree();nfRefreshNext();
+}
+function nfDeselect(){nfSel=null;nfMsg('');nfRenderTree();nfRefreshNext()}
+function nfAdd(){
+  const id=document.getElementById('nf-next').value;if(!id)return;
+  const n=nodeById[id];if(!n)return;
+  const node={uid:nfUid(),id:n.id,name:n.name,children:[]};
+  const parent=nfSel?nfFind(nfSel):null;
+  (parent?parent.children:nfTree).push(node);
+  nfSel=node.uid;nfMsg('');nfRenderTree();nfRefreshNext();
+}
+function nfRemove(uid){
+  nfRemoveUid(uid);
+  if(!nfFind(nfSel))nfSel=null;
+  nfMsg('');nfRenderTree();nfRefreshNext();
+}
+function nfClearAll(){nfTree=[];nfSel=null;nfMsg('');nfRenderTree();nfRefreshNext()}
+function nfResetBuilder(){
+  nfTree=[];nfSel=null;nfEditingId=null;
+  document.getElementById('nf-name').value='';
+  document.getElementById('nf-save').textContent='Save flow';
+  document.getElementById('nf-builder-title').textContent='Create a flow';
+  document.getElementById('nf-cancel').style.display='none';
+  nfRenderTree();nfRefreshNext();
+}
+function nfFlatten(nodes,prefix,out){
+  for(const n of nodes){
+    const path=prefix.concat([{id:n.id,name:n.name}]);
+    if(n.children.length)nfFlatten(n.children,path,out);
+    else out.push(path);
+  }
+}
+function nfCollectBranches(){
+  const paths=[];nfFlatten(nfTree,[],paths);
+  return paths.map(p=>({label:'',screens:p}));
+}
+function nfTreeFromBranches(branches){
+  const roots=[];
+  for(const br of (branches||[])){
+    let level=roots;
+    for(const s of br.screens){
+      let node=level.find(n=>n.id===s.id);
+      if(!node){node={uid:nfUid(),id:s.id,name:s.name,children:[]};level.push(node)}
+      level=node.children;
+    }
+  }
+  return roots;
+}
+async function nfSave(){
+  const name=document.getElementById('nf-name').value.trim();
+  if(!name){nfMsg('Enter a flow name.');return}
+  const branches=nfCollectBranches();
+  if(!branches.length){nfMsg('Add at least one screen.');return}
+  const url=nfEditingId?`/api/named-flows/${encodeURIComponent(nfEditingId)}`:'/api/named-flows';
+  const method=nfEditingId?'PUT':'POST';
+  try{
+    const r=await fetch(url,{method,headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name,branches})});
+    if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||('HTTP '+r.status))}
+    nfResetBuilder();nfMsg('Saved.');nfList();
+  }catch(e){nfMsg('Error: '+e.message)}
+}
+function nfEdit(id){
+  const f=nfCache[id];if(!f)return;
+  nfEditingId=id;nfTree=nfTreeFromBranches(f.branches);nfSel=null;
+  document.getElementById('nf-name').value=f.name;
+  document.getElementById('nf-save').textContent='Update flow';
+  document.getElementById('nf-builder-title').textContent='Edit flow';
+  document.getElementById('nf-cancel').style.display='';
+  nfMsg('');nfRenderTree();nfRefreshNext();
+  document.getElementById('nf-name').focus();
+}
+async function nfRename(id){
+  const f=nfCache[id];if(!f)return;
+  const v=prompt('New name for this flow:',f.name);if(v===null)return;
+  const name=v.trim();if(!name)return;
+  try{
+    const r=await fetch(`/api/named-flows/${encodeURIComponent(id)}`,{method:'PUT',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+    if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||('HTTP '+r.status))}
+    nfList();
+  }catch(e){alert('Rename failed: '+e.message)}
+}
+async function nfDelete(id){
+  if(!confirm('Delete this flow?'))return;
+  try{
+    const r=await fetch(`/api/named-flows/${encodeURIComponent(id)}`,{method:'DELETE'});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    if(nfEditingId===id)nfResetBuilder();
+    nfList();
+  }catch(e){alert('Delete failed: '+e.message)}
+}
+// Render a flow's branches as a compact tree: a shared prefix is shown once,
+// linear chains are joined with → on one line, and each real branch point
+// indents its children. Avoids repeating duplicated prefixes.
+function nfCountLeaves(nodes){
+  let c=0;
+  for(const n of nodes)c+=n.children.length?nfCountLeaves(n.children):1;
+  return c;
+}
+function nfRenderFlowTree(nodes,depth){
+  let html='';
+  for(const node of nodes){
+    const chain=[node];let cur=node;
+    while(cur.children.length===1){cur=cur.children[0];chain.push(cur)}
+    const label=chain.map(s=>esc(s.name)).join(' → ');
+    const prefix=depth?'→ ':'';
+    html+=`<span class="nf-flow-branch" style="margin-left:${depth*16}px">${prefix}${label}</span>`;
+    if(cur.children.length>1)html+=nfRenderFlowTree(cur.children,depth+1);
+  }
+  return html;
+}
+async function nfList(){
+  const q=document.getElementById('nf-search').value.trim();
+  const url=q?`/api/named-flows?q=${encodeURIComponent(q)}`:'/api/named-flows';
+  const tb=document.getElementById('nf-body');
+  try{
+    const d=await api(url);
+    nfCache=Object.fromEntries(d.flows.map(f=>[f.id,f]));
+    if(!d.flows.length){
+      tb.innerHTML=`<tr><td colspan="3" class="empty-td">${q?'No flows match that sequence.':'No named flows yet — create one above.'}</td></tr>`;
+      return;
+    }
+    tb.innerHTML=d.flows.map(f=>{
+      const tree=nfTreeFromBranches(f.branches||[]);
+      const paths=nfRenderFlowTree(tree,0);
+      const leaves=nfCountLeaves(tree);
+      const count=leaves>1?`<span class="none"> (${leaves} branches)</span>`:'';
+      return`<tr>
+        <td style="font-weight:500">${esc(f.name)}${count}</td>
+        <td>${paths}</td>
+        <td style="white-space:nowrap">
+          <button class="nf-mini" onclick="nfEdit('${esc(f.id)}')">Edit</button>
+          <button class="nf-mini" onclick="nfRename('${esc(f.id)}')">Rename</button>
+          <button class="nf-mini" onclick="nfDelete('${esc(f.id)}')">Delete</button>
+        </td></tr>`;
+    }).join('');
+  }catch(e){
+    tb.innerHTML=`<tr><td colspan="3" class="empty-td">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+async function nfExport(){
+  try{
+    const r=await fetch('/api/named-flows/export');
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const text=await r.text();
+    const blob=new Blob([text],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;a.download='named-flows.json';document.body.appendChild(a);a.click();a.remove();
+    URL.revokeObjectURL(url);
+    let n=0;try{n=(JSON.parse(text).flows||[]).length}catch{}
+    nfMsg('Exported '+n+' flow(s).');
+  }catch(e){nfMsg('Export failed: '+e.message)}
+}
+async function nfImportFile(ev){
+  const file=ev.target.files&&ev.target.files[0];if(!file)return;
+  try{
+    const json=JSON.parse(await file.text());
+    const payload=Array.isArray(json)?{flows:json}:json;  // tolerate a bare list
+    const r=await fetch('/api/named-flows/import',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||('HTTP '+r.status))}
+    const d=await r.json();
+    nfMsg('Imported '+d.imported+' flow(s).');nfList();
+  }catch(e){nfMsg('Import failed: '+e.message)}
+  finally{ev.target.value=''}  // allow re-importing the same file
+}
+document.getElementById('nf-add').addEventListener('click',nfAdd);
+document.getElementById('nf-remove').addEventListener('click',()=>{if(nfSel)nfRemove(nfSel);else nfMsg('Click a screen to select it first.')});
+document.getElementById('nf-deselect').addEventListener('click',nfDeselect);
+document.getElementById('nf-clear').addEventListener('click',nfClearAll);
+document.getElementById('nf-save').addEventListener('click',nfSave);
+document.getElementById('nf-cancel').addEventListener('click',()=>{nfResetBuilder();nfMsg('')});
+document.getElementById('nf-export').addEventListener('click',nfExport);
+document.getElementById('nf-import-btn').addEventListener('click',()=>document.getElementById('nf-import-file').click());
+document.getElementById('nf-import-file').addEventListener('change',nfImportFile);
+let nfTimer;
+document.getElementById('nf-search').addEventListener('input',()=>{clearTimeout(nfTimer);nfTimer=setTimeout(nfList,250)});
+document.getElementById('nf-search-reset').addEventListener('click',()=>{document.getElementById('nf-search').value='';nfList()});
 
 // ════════════════════════════════════════════════════════════════════════════════
 // ── SEARCH ────────────────────────────────────────────────────────────────────
@@ -840,9 +1209,52 @@ def _esc(s: str) -> str:
     return s.replace("\\", "\\\\").replace("'", "\\'")
 
 
-def create_web_app(store: GraphStore, bm25: BM25Index, embedder: Any) -> FastAPI:
-    """Return a FastAPI application serving the SPA and REST API."""
+def create_web_app(
+    store: GraphStore,
+    bm25: BM25Index,
+    embedder: Any,
+    named_flows_path: Path | None = None,
+) -> FastAPI:
+    """Return a FastAPI application serving the SPA and REST API.
+
+    *named_flows_path* is the JSON file backing user-defined named flows; when
+    ``None`` named flows are kept in memory only (used in tests).
+    """
     app = FastAPI(title="klit-flow portal", docs_url=None, redoc_url=None)
+    named_flows = NamedFlowStore(named_flows_path)
+
+    def _nav_adjacency() -> set[tuple[str, str]]:
+        """Return the set of (src_id, dst_id) pairs joined by a NAVIGATES_TO edge."""
+        rows = store.query(
+            "MATCH (a:KlitNode)-[e:KlitEdge]->(b:KlitNode) "
+            "WHERE e.type = 'NAVIGATES_TO' RETURN a.id, b.id"
+        )
+        return {(r[0], r[1]) for r in rows}
+
+    def _validate_flow_branches(branches: list[NamedFlowBranch]) -> None:
+        """Validate every branch: non-empty, and each consecutive pair a NAVIGATES_TO edge.
+
+        Raises HTTPException(400) on the first violation. A single-screen branch
+        is allowed (it has no pairs to validate).
+        """
+        if not branches:
+            raise HTTPException(status_code=400, detail="A flow must have at least one branch.")
+        adj = _nav_adjacency()
+        for branch in branches:
+            if not branch.screens:
+                raise HTTPException(
+                    status_code=400, detail="Each branch must have at least one screen."
+                )
+            for prev, nxt in zip(branch.screens, branch.screens[1:]):
+                if (prev.id, nxt.id) not in adj:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"No navigation edge from '{prev.name}' to '{nxt.name}'. "
+                            "Each step must be a detected NAVIGATES_TO destination "
+                            "of the previous screen."
+                        ),
+                    )
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def spa() -> str:
@@ -918,16 +1330,30 @@ def create_web_app(store: GraphStore, bm25: BM25Index, embedder: Any) -> FastAPI
             ]
         }
 
-    @app.get("/api/screen-apis/{screen_id}")
-    async def get_screen_apis(screen_id: str) -> dict[str, Any]:
-        """Return API/Service/Repository nodes reachable from *screen_id* within 5 hops."""
-        nid = _esc(screen_id)
-        screen_rows = store.query(f"MATCH (n:KlitNode {{id: '{nid}'}}) RETURN n.name, n.file_path")
-        if not screen_rows:
-            raise HTTPException(status_code=404, detail="Screen not found")
-        screen_name, screen_file = screen_rows[0][0], screen_rows[0][1]
+    def _screen_meta(screen_id: str) -> tuple[str, str] | None:
+        """Return (name, file_path) for a screen node, or None if absent."""
+        rows = store.query(
+            f"MATCH (n:KlitNode {{id: '{_esc(screen_id)}'}}) RETURN n.name, n.file_path"
+        )
+        return (rows[0][0], rows[0][1]) if rows else None
 
-        # All non-navigation edges as adjacency list
+    def _seed_ids(screen_id: str, screen_name: str, screen_file: str) -> set[str]:
+        """Screen node plus the Class (by name) and File (by path) nodes for it."""
+        rows = store.query(
+            f"MATCH (n:KlitNode) "
+            f"WHERE (n.name = '{_esc(screen_name)}' AND n.kind = 'Class') "
+            f"OR (n.file_path = '{_esc(screen_file)}' AND n.kind = 'File') "
+            f"RETURN n.id"
+        )
+        return {screen_id} | {r[0] for r in rows}
+
+    def _screen_apis_for(screen_id: str) -> tuple[str, list[dict]] | None:
+        """Return (screen_name, api_nodes) for API-ish nodes reachable within 5 hops."""
+        meta = _screen_meta(screen_id)
+        if meta is None:
+            return None
+        screen_name, screen_file = meta
+
         edge_rows = store.query(
             "MATCH (a:KlitNode)-[e:KlitEdge]->(b:KlitNode) "
             "WHERE e.type <> 'NAVIGATES_TO' RETURN a.id, b.id"
@@ -936,7 +1362,6 @@ def create_web_app(store: GraphStore, bm25: BM25Index, embedder: Any) -> FastAPI
         for row in edge_rows:
             adj.setdefault(row[0], []).append(row[1])
 
-        # All non-Screen nodes for lookup
         node_rows = store.query(
             "MATCH (n:KlitNode) WHERE n.kind <> 'Screen' RETURN n.id, n.name, n.kind, n.file_path"
         )
@@ -944,19 +1369,8 @@ def create_web_app(store: GraphStore, bm25: BM25Index, embedder: Any) -> FastAPI
             r[0]: {"id": r[0], "name": r[1], "kind": r[2], "file": r[3]} for r in node_rows
         }
 
-        # BFS seeds: the Class and File nodes corresponding to this screen
-        seed_rows = store.query(
-            f"MATCH (n:KlitNode) "
-            f"WHERE (n.name = '{_esc(screen_name)}' AND n.kind = 'Class') "
-            f"OR (n.file_path = '{_esc(screen_file)}' AND n.kind = 'File') "
-            f"RETURN n.id"
-        )
-        visited: set[str] = {screen_id} | {r[0] for r in seed_rows}
-        queue: list[str] = [
-            nid2 for sid in visited for nid2 in adj.get(sid, []) if nid2 not in visited
-        ]
-
-        _API_KW = {"api", "service", "repository", "client", "http", "retrofit", "volley"}
+        visited = _seed_ids(screen_id, screen_name, screen_file)
+        queue = [n2 for sid in visited for n2 in adj.get(sid, []) if n2 not in visited]
         api_nodes: list[dict] = []
         seen_names: set[str] = set()
 
@@ -967,7 +1381,7 @@ def create_web_app(store: GraphStore, bm25: BM25Index, embedder: Any) -> FastAPI
                     continue
                 visited.add(nid2)
                 node = nodes_by_id.get(nid2)
-                if node and any(kw in node["name"].lower() for kw in _API_KW):
+                if node and any(kw in node["name"].lower() for kw in _API_KEYWORDS):
                     if node["name"] not in seen_names:
                         api_nodes.append(node)
                         seen_names.add(node["name"])
@@ -976,6 +1390,38 @@ def create_web_app(store: GraphStore, bm25: BM25Index, embedder: Any) -> FastAPI
             if not queue:
                 break
 
+        return screen_name, api_nodes
+
+    def _screen_deps_for(screen_id: str) -> list[dict]:
+        """Direct (1-hop) non-navigation dependencies of a screen's class/file nodes."""
+        meta = _screen_meta(screen_id)
+        if meta is None:
+            return []
+        screen_name, screen_file = meta
+        seeds = _seed_ids(screen_id, screen_name, screen_file)
+        id_list = ", ".join(f"'{_esc(s)}'" for s in seeds)
+        rows = store.query(
+            f"MATCH (a:KlitNode)-[e:KlitEdge]->(b:KlitNode) "
+            f"WHERE a.id IN [{id_list}] AND e.type <> 'NAVIGATES_TO' AND b.kind <> 'Screen' "
+            f"RETURN DISTINCT b.name, b.kind, b.file_path, e.type"
+        )
+        deps: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for name, kind, fp, etype in rows:
+            key = (name, etype)
+            if key in seen:
+                continue
+            seen.add(key)
+            deps.append({"name": name, "kind": kind, "file": fp, "via": etype})
+        return deps
+
+    @app.get("/api/screen-apis/{screen_id}")
+    async def get_screen_apis(screen_id: str) -> dict[str, Any]:
+        """Return API/Service/Repository nodes reachable from *screen_id* within 5 hops."""
+        result = _screen_apis_for(screen_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Screen not found")
+        screen_name, api_nodes = result
         return {"screen_id": screen_id, "screen_name": screen_name, "api_deps": api_nodes}
 
     @app.get("/api/node/{node_id}")
@@ -1011,7 +1457,128 @@ def create_web_app(store: GraphStore, bm25: BM25Index, embedder: Any) -> FastAPI
             "inbound": [{"type": r[0], "id": r[1], "name": r[2], "kind": r[3]} for r in inb],
         }
 
+    # ── Named flows (user-defined, curated screen sequences) ────────────────
+
+    @app.get("/api/named-flows")
+    async def list_named_flows(q: str = "") -> dict[str, Any]:
+        """List named flows; when *q* is set, filter by an ordered screen subsequence.
+
+        *q* is a sequence of screen names separated by ``>``, ``->`` or ``,``
+        (e.g. ``B > C``).  A flow matches when any one of its branches contains
+        the queried names in order (gaps allowed), compared case-insensitively.
+        """
+        sequence = _parse_screen_sequence(q)
+        flows = named_flows.search(sequence) if sequence else named_flows.list()
+        return {"flows": [f.model_dump() for f in flows]}
+
+    @app.get("/api/named-flows/export")
+    async def export_named_flows() -> dict[str, Any]:
+        """Export all named flows, enriching each screen with its deps and called APIs.
+
+        Registered before ``/{flow_id}`` so the literal ``export`` path wins.
+        """
+        screen_cache: dict[str, dict[str, Any]] = {}
+
+        def enrich(screen: NamedFlowScreen) -> dict[str, Any]:
+            if screen.id not in screen_cache:
+                apis = _screen_apis_for(screen.id)
+                screen_cache[screen.id] = {
+                    "id": screen.id,
+                    "name": screen.name,
+                    "dependencies": _screen_deps_for(screen.id),
+                    "apis": apis[1] if apis else [],
+                }
+            return screen_cache[screen.id]
+
+        flows_out = [
+            {
+                "id": f.id,
+                "name": f.name,
+                "created_at": f.created_at,
+                "updated_at": f.updated_at,
+                "branches": [
+                    {"label": br.label, "screens": [enrich(s) for s in br.screens]}
+                    for br in f.branches
+                ],
+            }
+            for f in named_flows.list()
+        ]
+        return {
+            "version": _EXPORT_VERSION,
+            "exported_at": datetime.now(UTC).isoformat(),
+            "flows": flows_out,
+        }
+
+    @app.post("/api/named-flows/import")
+    async def import_named_flows(payload: _ImportPayload) -> dict[str, Any]:
+        """Import named flows from an exported file (appends; does not replace).
+
+        Screen enrichment fields (dependencies/apis) are ignored on import, and
+        navigation-edge validation is skipped so flows exported from one repo can
+        be imported even if the current graph differs.
+        """
+        imported = 0
+        for f in payload.flows:
+            name = f.name.strip()
+            branches = [
+                NamedFlowBranch(
+                    label=b.label,
+                    screens=[NamedFlowScreen(id=s.id, name=s.name) for s in b.screens],
+                )
+                for b in f.branches
+                if b.screens
+            ]
+            if not name or not branches:
+                continue
+            named_flows.create(name, branches)
+            imported += 1
+        return {"imported": imported, "total": len(named_flows.list())}
+
+    @app.get("/api/named-flows/{flow_id}")
+    async def get_named_flow(flow_id: str) -> NamedFlow:
+        flow = named_flows.get(flow_id)
+        if flow is None:
+            raise HTTPException(status_code=404, detail="Named flow not found")
+        return flow
+
+    @app.post("/api/named-flows", status_code=201)
+    async def create_named_flow(body: _FlowCreate) -> NamedFlow:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Flow name must not be empty.")
+        _validate_flow_branches(body.branches)
+        return named_flows.create(name, body.branches)
+
+    @app.put("/api/named-flows/{flow_id}")
+    async def update_named_flow(flow_id: str, body: _FlowUpdate) -> NamedFlow:
+        if named_flows.get(flow_id) is None:
+            raise HTTPException(status_code=404, detail="Named flow not found")
+        name: str | None = None
+        if body.name is not None:
+            name = body.name.strip()
+            if not name:
+                raise HTTPException(status_code=400, detail="Flow name must not be empty.")
+        if body.branches is not None:
+            _validate_flow_branches(body.branches)
+        flow = named_flows.update(flow_id, name=name, branches=body.branches)
+        assert flow is not None  # existence checked above
+        return flow
+
+    @app.delete("/api/named-flows/{flow_id}")
+    async def delete_named_flow(flow_id: str) -> dict[str, bool]:
+        if not named_flows.delete(flow_id):
+            raise HTTPException(status_code=404, detail="Named flow not found")
+        return {"deleted": True}
+
     return app
+
+
+def _parse_screen_sequence(raw: str) -> list[str]:
+    """Split a query like ``A > B -> C, D`` into ``['A', 'B', 'C', 'D']``."""
+    if not raw:
+        return []
+    tokens = re.split(r"->|>|,", raw)
+    return [t.strip() for t in tokens if t.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -1021,6 +1588,7 @@ def create_web_app(store: GraphStore, bm25: BM25Index, embedder: Any) -> FastAPI
 _KLIT_DIR = ".klit-flow"
 _DB_NAME = "graph.db"
 _BM25_NAME = "bm25.pkl"
+_NAMED_FLOWS_NAME = "named_flows.json"
 
 
 def run_web_server(target: Path, port: int) -> None:
@@ -1039,7 +1607,7 @@ def run_web_server(target: Path, port: int) -> None:
     bm25 = BM25Index.load(bm25_path) if bm25_path.exists() else _empty_bm25()
     embedder = Embedder()
 
-    web_app = create_web_app(store, bm25, embedder)
+    web_app = create_web_app(store, bm25, embedder, named_flows_path=klit_dir / _NAMED_FLOWS_NAME)
     try:
         uvicorn.run(web_app, host="127.0.0.1", port=port, log_level="warning")
     finally:

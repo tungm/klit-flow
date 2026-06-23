@@ -34,12 +34,42 @@ _KLIT_DIR = ".klit-flow"
 _DB_NAME = "graph.db"
 _BM25_NAME = "bm25.pkl"
 _OUT_DIR = "out"
+_NAMED_FLOWS_NAME = "named_flows.json"
 
 
 def _klit_paths(target: Path) -> tuple[Path, Path, Path, Path]:
     """Return (klit_dir, db_path, bm25_path, out_dir) for a target repo root."""
     klit_dir = target / _KLIT_DIR
     return klit_dir, klit_dir / _DB_NAME, klit_dir / _BM25_NAME, klit_dir / _OUT_DIR
+
+
+def _relativize_path(file_path: str | None, root: Path) -> str | None:
+    """Make *file_path* relative (POSIX) to *root* so the index is portable.
+
+    The project root is where ``.klit-flow`` lives; storing source paths
+    relative to it means the whole project can be moved without breaking the
+    persisted graph, docs, or exports. Already-relative paths are normalized to
+    POSIX; paths outside *root* are left absolute (best effort).
+    """
+    if not file_path:
+        return file_path
+    p = Path(file_path)
+    if not p.is_absolute():
+        return p.as_posix()
+    try:
+        return p.relative_to(root).as_posix()
+    except ValueError:
+        return p.as_posix()
+
+
+def _relativize_nodes(nodes: list, root: Path) -> list:
+    """Return copies of *nodes* with ``file_path`` made relative to *root*."""
+    return [n.model_copy(update={"file_path": _relativize_path(n.file_path, root)}) for n in nodes]
+
+
+def _relativize_edges(edges: list, root: Path) -> list:
+    """Return copies of *edges* with ``file_path`` made relative to *root*."""
+    return [e.model_copy(update={"file_path": _relativize_path(e.file_path, root)}) for e in edges]
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +138,14 @@ def analyze(
     extractor = get_extractor(platform)
     screen_nodes = extractor.extract_screens(source_files, symbols_by_file)
     flow_edges = extractor.extract_flows(source_files, symbols_by_file, screen_nodes)
+
+    # Store all file paths relative to the project root so the index is portable
+    # (the project can be moved without breaking the persisted data).
+    nodes = _relativize_nodes(nodes, root)
+    edges = _relativize_edges(edges, root)
+    screen_nodes = _relativize_nodes(screen_nodes, root)
+    flow_edges = _relativize_edges(flow_edges, root)
+
     nodes = nodes + screen_nodes
     edges = edges + flow_edges
     typer.echo(f"  {len(screen_nodes)} screens, {len(flow_edges)} navigation edges.")
@@ -263,7 +301,7 @@ def serve(
     from klit_flow.server.web_server import create_web_app
 
     target = Path.cwd()
-    _, db_path, bm25_path, _ = _klit_paths(target)
+    klit_dir, db_path, bm25_path, _ = _klit_paths(target)
     if not db_path.exists():
         typer.echo("No index found. Run 'klit-flow analyze' first.", err=True)
         raise typer.Exit(1)
@@ -272,7 +310,7 @@ def serve(
     bm25 = BM25Index.load(bm25_path) if bm25_path.exists() else _empty_bm25()
     embedder = Embedder()
 
-    web_app = create_web_app(store, bm25, embedder)
+    web_app = create_web_app(store, bm25, embedder, named_flows_path=klit_dir / _NAMED_FLOWS_NAME)
     mcp = create_server(store, bm25, embedder)
 
     config = uvicorn.Config(web_app, host=host, port=port, log_level="warning")
