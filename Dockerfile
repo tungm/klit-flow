@@ -36,7 +36,16 @@ ENV KLIT_FLOW_PARSER_CACHE_DIR=/opt/klit-flow/parsers \
 # build time. With only the placeholder ``.gitkeep`` present this is a no-op,
 # so the image still builds normally outside a corporate network.
 COPY certs/ /usr/local/share/ca-certificates/
-RUN update-ca-certificates
+RUN echo "== files in cert dir ==" \
+    && ls -la /usr/local/share/ca-certificates/ \
+    && echo "== running update-ca-certificates ==" \
+    && update-ca-certificates --verbose \
+    && echo "== installed corporate certs in trust store ==" \
+    && ls -la /etc/ssl/certs/ | grep -vi "^total" | tail -n +1 \
+    && for f in /usr/local/share/ca-certificates/*.crt; do \
+         echo "-- $f --"; \
+         openssl x509 -in "$f" -noout -subject -issuer 2>&1 || echo "NOT VALID PEM: $f"; \
+       done
 
 # Point pip and every requests/urllib/curl-based tool at the combined system
 # bundle, which now includes the corporate CA (and all public CAs).
