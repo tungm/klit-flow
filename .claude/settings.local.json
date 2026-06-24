@@ -29,7 +29,8 @@
       "Bash(.venv/Scripts/python -c \":*)",
       "Bash(rm -rf \"E:/projects/klit-flow/release/v1.0.0/models/bge-small-en-v1.5\")",
       "Bash(.venv/Scripts/pip show:*)",
-      "Bash(.venv/Scripts/klit-flow download-parsers:*)"
+      "Bash(.venv/Scripts/klit-flow download-parsers:*)",
+      "Bash(pip show *)"
     ]
   }
 }

@@ -16,8 +16,19 @@ env/
 # klit-flow index output
 .klit-flow/
 
-# Release archives (parsers/model are downloaded during the image build)
-release/
+# Release bundles are large. Bake ONLY the v1.1.0 Linux parser binaries and the
+# embedding model into the image (see COPY lines in the Dockerfile); keep
+# everything else under release/ out of the build context. Each path level must
+# be re-included explicitly — a .dockerignore exception does not cross an
+# excluded parent directory.
+release/*
+!release/v1.1.0
+release/v1.1.0/*
+!release/v1.1.0/parsers
+!release/v1.1.0/models
+release/v1.1.0/parsers/*
+!release/v1.1.0/parsers/linux-x86_64
+!release/v1.1.0/parsers/linux-aarch64
 
 # Tools / caches
 .ruff_cache/

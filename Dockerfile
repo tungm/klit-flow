@@ -4,9 +4,11 @@
 # klit-flow — local, offline code-intelligence tool
 #
 # This image is fully self-contained: the tree-sitter parser binaries and the
-# embedding model are downloaded at build time and baked into the image, so the
-# container performs **no network calls at runtime** — consistent with the
-# project's offline guarantee.
+# embedding model are copied from the pre-downloaded release bundle
+# (release/v1.1.0/) and baked into the image, so the container performs **no
+# network calls at runtime** — consistent with the project's offline guarantee.
+# Baking the assets in (rather than downloading them at build time) also means
+# the build works behind corporate proxies that mangle HTTP Range requests.
 #
 # Build:
 #   docker build -t klit-flow .
@@ -29,23 +31,14 @@ ENV KLIT_FLOW_PARSER_CACHE_DIR=/opt/klit-flow/parsers \
     PYTHONUNBUFFERED=1
 
 # ── Corporate TLS interception ───────────────────────────────────────────────
-# Behind a proxy that re-signs HTTPS, every download below (pip, PyTorch index,
-# tree-sitter parsers, HuggingFace model) needs your company root CA to be
-# trusted. Drop one or more PEM-encoded ``*.crt`` files into ``./certs/`` next
-# to this Dockerfile and they are installed into the system trust store at
-# build time. With only the placeholder ``.gitkeep`` present this is a no-op,
-# so the image still builds normally outside a corporate network.
+# Behind a proxy that re-signs HTTPS, the pip downloads below (PyPI + the
+# PyTorch CPU index) need your company root CA to be trusted. Drop one or more
+# PEM-encoded ``*.crt`` files into ``./certs/`` next to this Dockerfile and they
+# are installed into the system trust store at build time. With only the
+# placeholder ``.gitkeep`` present this is a no-op, so the image still builds
+# normally outside a corporate network.
 COPY certs/ /usr/local/share/ca-certificates/
-RUN echo "== files in cert dir ==" \
-    && ls -la /usr/local/share/ca-certificates/ \
-    && echo "== running update-ca-certificates ==" \
-    && update-ca-certificates --verbose \
-    && echo "== installed corporate certs in trust store ==" \
-    && ls -la /etc/ssl/certs/ | grep -vi "^total" | tail -n +1 \
-    && for f in /usr/local/share/ca-certificates/*.crt; do \
-         echo "-- $f --"; \
-         openssl x509 -in "$f" -noout -subject -issuer 2>&1 || echo "NOT VALID PEM: $f"; \
-       done
+RUN update-ca-certificates
 
 # Point pip and every requests/urllib/curl-based tool at the combined system
 # bundle, which now includes the corporate CA (and all public CAs).
@@ -62,14 +55,20 @@ COPY src ./src
 
 # Install klit-flow plus CPU-only PyTorch (required by sentence-transformers).
 # CPU wheels keep the image dramatically smaller than the default CUDA build.
+# --timeout / --retries make large downloads (the ~190 MB torch CPU wheel)
+# survive slow corporate proxies that would otherwise trip a read timeout.
 RUN pip install --upgrade pip \
-    && pip install torch --index-url https://download.pytorch.org/whl/cpu \
-    && pip install ".[release]"
+    && pip install --timeout 1000 --retries 10 \
+        torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --timeout 1000 --retries 10 "."
 
-# Bake in the parser binaries (current platform) and the embedding model so the
-# container never needs the network at runtime.
-RUN klit-flow download-parsers --cache-dir "$KLIT_FLOW_PARSER_CACHE_DIR" \
-    && klit-flow download-model "$KLIT_FLOW_MODEL_DIR"
+# Bake in the parser binaries and the embedding model from the pre-downloaded
+# release bundle so the container never needs the network — at build OR runtime.
+# Only the Linux parser binaries are copied (this is a Linux image); the runtime
+# auto-detects the matching <platform>/ subdir under KLIT_FLOW_PARSER_CACHE_DIR.
+COPY release/v1.1.0/parsers/linux-x86_64/  /opt/klit-flow/parsers/linux-x86_64/
+COPY release/v1.1.0/parsers/linux-aarch64/ /opt/klit-flow/parsers/linux-aarch64/
+COPY release/v1.1.0/models/bge-small-en-v1.5/ /opt/klit-flow/models/bge-small-en-v1.5/
 
 # Target repositories are mounted here.
 WORKDIR /workspace
