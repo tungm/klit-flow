@@ -44,6 +44,13 @@ klit-flow = "klit_flow.cli:app"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Bundle the tree-sitter .scm query files into the wheel/sdist. Without this,
+# `pip install .` ships the Python code but not the queries, so the parser logs
+# "No query file for ..." and extracts no edges (works in editable installs
+# only because they read straight from src/).
+[tool.setuptools.package-data]
+"klit_flow.parsing" = ["queries/*.scm"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
