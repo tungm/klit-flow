@@ -33,7 +33,9 @@
       "Bash(pip show *)",
       "Bash(git check-attr *)",
       "Bash(git check-ignore *)",
-      "Bash(git lfs *)"
+      "Bash(git lfs *)",
+      "Bash(cd /tmp)",
+      "Bash(rm -rf lbtest)"
     ]
   }
 }

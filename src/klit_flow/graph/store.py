@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,33 @@ import ladybug
 from klit_flow.graph.model import GraphEdge, GraphNode
 
 logger = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read a non-negative int from the environment, falling back to *default*."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+# Memory tuning for large repos. LadybugDB/Kuzu defaults ``buffer_pool_size`` to
+# ~80% of *physical* RAM, which can OOM-kill (exit 137) the "Persisting graph …"
+# step on a big app — especially since the parse/resolve results are still held
+# in memory at that point. Cap the buffer pool and write parallelism by default;
+# both are overridable via env vars for users who want to trade RAM for speed.
+_DEFAULT_BUFFER_POOL_BYTES = 512 * 1024 * 1024  # 512 MiB
+_DEFAULT_MAX_THREADS = 2
+
+# Insert in bounded transactions: a single transaction over millions of rows
+# would hold the whole change set in the WAL (defeating the point), while
+# committing per row pays a checkpoint flush on every statement. Commit every
+# ``_WRITE_BATCH_SIZE`` rows to bound peak memory without thrashing.
+_WRITE_BATCH_SIZE = 5000
 
 
 def parse_conditions_json(raw: str) -> list[dict[str, Any]]:
@@ -72,11 +101,11 @@ class GraphStore(ABC):
         """Create node / edge tables.  Must be idempotent (safe to call twice)."""
 
     @abstractmethod
-    def add_nodes(self, nodes: list[GraphNode]) -> None:
+    def add_nodes(self, nodes: Iterable[GraphNode]) -> None:
         """Upsert a batch of ``GraphNode`` records."""
 
     @abstractmethod
-    def add_edges(self, edges: list[GraphEdge]) -> None:
+    def add_edges(self, edges: Iterable[GraphEdge]) -> None:
         """Insert edges; silently skips any edge whose src or dst is absent."""
 
     @abstractmethod
@@ -116,11 +145,30 @@ class LadybugGraphStore(GraphStore):
         model used in Phase 7.  Defaults to 384 (``BAAI/bge-small-en-v1.5``).
     """
 
-    def __init__(self, db_path: Path, emb_dim: int = 384) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        emb_dim: int = 384,
+        *,
+        buffer_pool_size: int | None = None,
+        max_num_threads: int | None = None,
+    ) -> None:
         self._emb_dim = emb_dim
         self._lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = ladybug.Database(str(db_path))
+        if buffer_pool_size is None:
+            buffer_pool_size = _env_int(
+                "KLIT_FLOW_DB_BUFFER_POOL_BYTES", _DEFAULT_BUFFER_POOL_BYTES
+            )
+        if max_num_threads is None:
+            max_num_threads = _env_int("KLIT_FLOW_DB_MAX_THREADS", _DEFAULT_MAX_THREADS)
+        # ``buffer_pool_size=0`` / ``max_num_threads=0`` keep LadybugDB's auto
+        # sizing (≈80% RAM, all cores); a positive value caps it.
+        self._db = ladybug.Database(
+            str(db_path),
+            buffer_pool_size=buffer_pool_size,
+            max_num_threads=max_num_threads,
+        )
         self._conn = ladybug.Connection(self._db)
         self._closed = False
         try:
@@ -157,56 +205,86 @@ class LadybugGraphStore(GraphStore):
             )
         """)
 
+    # ── Bulk-write helper ───────────────────────────────────────────────────────
+
+    def _batched_write(self, query: str, params_iter: Iterator[dict[str, Any]]) -> None:
+        """Execute *query* once per param dict in bounded transactions.
+
+        Each ``QueryResult`` is closed immediately so LadybugDB releases the
+        result's native buffers instead of waiting on Python GC, and a ``COMMIT``
+        is issued every ``_WRITE_BATCH_SIZE`` rows so the in-memory WAL stays
+        bounded on very large repos. The whole write rolls back on error.
+        """
+        rows = 0
+        self._conn.execute("BEGIN TRANSACTION")
+        try:
+            for params in params_iter:
+                self._conn.execute(query, params).close()
+                rows += 1
+                if rows % _WRITE_BATCH_SIZE == 0:
+                    self._conn.execute("COMMIT")
+                    self._conn.execute("BEGIN TRANSACTION")
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+
     # ── Nodes ─────────────────────────────────────────────────────────────────
 
-    def add_nodes(self, nodes: list[GraphNode]) -> None:
+    def add_nodes(self, nodes: Iterable[GraphNode]) -> None:
         """Upsert nodes via ``MERGE`` on the primary key."""
-        for node in nodes:
-            self._conn.execute(
-                f"MERGE (n:{_NODE_TABLE} {{id: $id}}) "
-                "ON CREATE SET n.kind = $kind, n.name = $name, "
-                "n.file_path = $fp, n.start_line = $sl, n.end_line = $el, "
-                "n.language = $lang "
-                "ON MATCH SET n.kind = $kind, n.name = $name, "
-                "n.file_path = $fp, n.start_line = $sl, n.end_line = $el, "
-                "n.language = $lang",
-                {
-                    "id": node.id,
-                    "kind": str(node.kind),
-                    "name": node.name,
-                    "fp": node.file_path,
-                    "sl": node.start_line,
-                    "el": node.end_line,
-                    "lang": node.language,
-                },
-            )
+        query = (
+            f"MERGE (n:{_NODE_TABLE} {{id: $id}}) "
+            "ON CREATE SET n.kind = $kind, n.name = $name, "
+            "n.file_path = $fp, n.start_line = $sl, n.end_line = $el, "
+            "n.language = $lang "
+            "ON MATCH SET n.kind = $kind, n.name = $name, "
+            "n.file_path = $fp, n.start_line = $sl, n.end_line = $el, "
+            "n.language = $lang"
+        )
+        params = (
+            {
+                "id": node.id,
+                "kind": str(node.kind),
+                "name": node.name,
+                "fp": node.file_path,
+                "sl": node.start_line,
+                "el": node.end_line,
+                "lang": node.language,
+            }
+            for node in nodes
+        )
+        self._batched_write(query, params)
 
     # ── Edges ─────────────────────────────────────────────────────────────────
 
-    def add_edges(self, edges: list[GraphEdge]) -> None:
+    def add_edges(self, edges: Iterable[GraphEdge]) -> None:
         """Insert edges.
 
         The ``MATCH`` pattern silently produces no result — and therefore
         creates no edge — when either endpoint is missing from the DB.
         """
-        for edge in edges:
-            self._conn.execute(
-                f"MATCH (a:{_NODE_TABLE} {{id: $src}}), (b:{_NODE_TABLE} {{id: $dst}}) "
-                f"CREATE (a)-[:{_EDGE_TABLE} {{type: $type, confidence: $conf, "
-                f"file_path: $fp, line: $line, trigger: $trigger, condition: $cond}}]->(b)",
-                {
-                    "src": edge.src_id,
-                    "dst": edge.dst_id,
-                    "type": str(edge.type),
-                    "conf": edge.confidence,
-                    "fp": edge.file_path or "",
-                    "line": edge.line or 0,
-                    "trigger": edge.trigger or "",
-                    "cond": json.dumps([c.model_dump() for c in edge.conditions])
-                    if edge.conditions
-                    else "",
-                },
-            )
+        query = (
+            f"MATCH (a:{_NODE_TABLE} {{id: $src}}), (b:{_NODE_TABLE} {{id: $dst}}) "
+            f"CREATE (a)-[:{_EDGE_TABLE} {{type: $type, confidence: $conf, "
+            f"file_path: $fp, line: $line, trigger: $trigger, condition: $cond}}]->(b)"
+        )
+        params = (
+            {
+                "src": edge.src_id,
+                "dst": edge.dst_id,
+                "type": str(edge.type),
+                "conf": edge.confidence,
+                "fp": edge.file_path or "",
+                "line": edge.line or 0,
+                "trigger": edge.trigger or "",
+                "cond": json.dumps([c.model_dump() for c in edge.conditions])
+                if edge.conditions
+                else "",
+            }
+            for edge in edges
+        )
+        self._batched_write(query, params)
 
     # ── Query ─────────────────────────────────────────────────────────────────
 
