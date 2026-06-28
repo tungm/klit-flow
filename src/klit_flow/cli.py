@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -60,6 +61,20 @@ def _relativize_path(file_path: str | None, root: Path) -> str | None:
         return p.relative_to(root).as_posix()
     except ValueError:
         return p.as_posix()
+
+
+def _persist_progress(label: str, total: int):
+    """Build a progress callback that prints ``written/total`` for the persist step.
+
+    Output goes to stderr with an explicit flush so the last reported count is
+    visible even if the process is OOM-killed (exit 137) mid-write.
+    """
+
+    def report(written: int) -> None:
+        typer.echo(f"    {label}: {written}/{total}", err=True)
+        sys.stderr.flush()
+
+    return report
 
 
 def _relativize_nodes(nodes: list, root: Path) -> list:
@@ -151,11 +166,17 @@ def analyze(
     typer.echo(f"  {len(screen_nodes)} screens, {len(flow_edges)} navigation edges.")
 
     # ── Persist ───────────────────────────────────────────────────────────────
-    typer.echo("Persisting graph …")
+    # This step is the OOM-prone one (exit 137); print live progress with an
+    # explicit flush so the last reported count survives an out-of-memory kill.
+    typer.echo(f"Persisting graph … ({len(nodes)} nodes, {len(edges)} edges)")
     with LadybugGraphStore(db_path) as store:
         store.create_schema()
-        store.add_nodes(nodes)
-        store.add_edges(edges)
+
+        typer.echo(f"  Writing {len(nodes)} nodes …")
+        store.add_nodes(nodes, progress=_persist_progress("nodes", len(nodes)))
+
+        typer.echo(f"  Writing {len(edges)} edges …")
+        store.add_edges(edges, progress=_persist_progress("edges", len(edges)))
 
         # ── Index ─────────────────────────────────────────────────────────────
         typer.echo("Building search index …")

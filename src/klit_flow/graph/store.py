@@ -27,7 +27,7 @@ import logging
 import os
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +63,11 @@ _DEFAULT_MAX_THREADS = 2
 # committing per row pays a checkpoint flush on every statement. Commit every
 # ``_WRITE_BATCH_SIZE`` rows to bound peak memory without thrashing.
 _WRITE_BATCH_SIZE = 5000
+
+# A callback invoked with the running count of rows written, so callers can
+# surface progress on the OOM-prone persist step (exit 137). Fired once per
+# committed batch and once more at the end.
+ProgressCallback = Callable[[int], None]
 
 
 def parse_conditions_json(raw: str) -> list[dict[str, Any]]:
@@ -101,12 +106,24 @@ class GraphStore(ABC):
         """Create node / edge tables.  Must be idempotent (safe to call twice)."""
 
     @abstractmethod
-    def add_nodes(self, nodes: Iterable[GraphNode]) -> None:
-        """Upsert a batch of ``GraphNode`` records."""
+    def add_nodes(
+        self, nodes: Iterable[GraphNode], *, progress: ProgressCallback | None = None
+    ) -> None:
+        """Upsert a batch of ``GraphNode`` records.
+
+        *progress*, if given, is called with the running row count as batches
+        commit, so callers can report progress on the persist step.
+        """
 
     @abstractmethod
-    def add_edges(self, edges: Iterable[GraphEdge]) -> None:
-        """Insert edges; silently skips any edge whose src or dst is absent."""
+    def add_edges(
+        self, edges: Iterable[GraphEdge], *, progress: ProgressCallback | None = None
+    ) -> None:
+        """Insert edges; silently skips any edge whose src or dst is absent.
+
+        *progress*, if given, is called with the running row count as batches
+        commit, so callers can report progress on the persist step.
+        """
 
     @abstractmethod
     def query(self, cypher: str) -> list[list[Any]]:
@@ -207,13 +224,23 @@ class LadybugGraphStore(GraphStore):
 
     # ── Bulk-write helper ───────────────────────────────────────────────────────
 
-    def _batched_write(self, query: str, params_iter: Iterator[dict[str, Any]]) -> None:
+    def _batched_write(
+        self,
+        query: str,
+        params_iter: Iterator[dict[str, Any]],
+        *,
+        progress: ProgressCallback | None = None,
+    ) -> None:
         """Execute *query* once per param dict in bounded transactions.
 
         Each ``QueryResult`` is closed immediately so LadybugDB releases the
         result's native buffers instead of waiting on Python GC, and a ``COMMIT``
         is issued every ``_WRITE_BATCH_SIZE`` rows so the in-memory WAL stays
         bounded on very large repos. The whole write rolls back on error.
+
+        *progress* is called with the running row count after each committed
+        batch (and once at the end), so callers can report how far the
+        OOM-prone persist step has got before any crash.
         """
         rows = 0
         self._conn.execute("BEGIN TRANSACTION")
@@ -224,14 +251,22 @@ class LadybugGraphStore(GraphStore):
                 if rows % _WRITE_BATCH_SIZE == 0:
                     self._conn.execute("COMMIT")
                     self._conn.execute("BEGIN TRANSACTION")
+                    logger.info("  … %d rows written", rows)
+                    if progress is not None:
+                        progress(rows)
             self._conn.execute("COMMIT")
         except Exception:
             self._conn.execute("ROLLBACK")
             raise
+        logger.info("  %d rows written (done)", rows)
+        if progress is not None:
+            progress(rows)
 
     # ── Nodes ─────────────────────────────────────────────────────────────────
 
-    def add_nodes(self, nodes: Iterable[GraphNode]) -> None:
+    def add_nodes(
+        self, nodes: Iterable[GraphNode], *, progress: ProgressCallback | None = None
+    ) -> None:
         """Upsert nodes via ``MERGE`` on the primary key."""
         query = (
             f"MERGE (n:{_NODE_TABLE} {{id: $id}}) "
@@ -254,11 +289,13 @@ class LadybugGraphStore(GraphStore):
             }
             for node in nodes
         )
-        self._batched_write(query, params)
+        self._batched_write(query, params, progress=progress)
 
     # ── Edges ─────────────────────────────────────────────────────────────────
 
-    def add_edges(self, edges: Iterable[GraphEdge]) -> None:
+    def add_edges(
+        self, edges: Iterable[GraphEdge], *, progress: ProgressCallback | None = None
+    ) -> None:
         """Insert edges.
 
         The ``MATCH`` pattern silently produces no result — and therefore
@@ -284,7 +321,7 @@ class LadybugGraphStore(GraphStore):
             }
             for edge in edges
         )
-        self._batched_write(query, params)
+        self._batched_write(query, params, progress=progress)
 
     # ── Query ─────────────────────────────────────────────────────────────────
 
