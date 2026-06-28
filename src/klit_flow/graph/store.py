@@ -188,6 +188,7 @@ class LadybugGraphStore(GraphStore):
         )
         self._conn = ladybug.Connection(self._db)
         self._closed = False
+        self._checkpoint_supported = True
         try:
             self._conn.execute("INSTALL VECTOR; LOAD EXTENSION VECTOR;")
         except Exception:
@@ -224,6 +225,26 @@ class LadybugGraphStore(GraphStore):
 
     # ── Bulk-write helper ───────────────────────────────────────────────────────
 
+    def _checkpoint(self) -> None:
+        """Flush the WAL to the main store, best-effort.
+
+        ``COMMIT`` only writes a batch to the WAL; the dirty pages and WAL
+        entries are not reclaimed until a checkpoint moves them into the main
+        store. Without this, memory climbs ~linearly with rows inserted and the
+        OOM-prone persist step (exit 137) can be killed mid-write on a large
+        repo. Run *outside* any active transaction (after ``COMMIT``).
+
+        Failures are swallowed and disable further attempts: a missing/varying
+        ``CHECKPOINT`` statement must never abort an otherwise-valid write.
+        """
+        if not self._checkpoint_supported:
+            return
+        try:
+            self._conn.execute("CHECKPOINT").close()
+        except Exception:
+            self._checkpoint_supported = False
+            logger.debug("CHECKPOINT unsupported; skipping further checkpoints.")
+
     def _batched_write(
         self,
         query: str,
@@ -234,9 +255,11 @@ class LadybugGraphStore(GraphStore):
         """Execute *query* once per param dict in bounded transactions.
 
         Each ``QueryResult`` is closed immediately so LadybugDB releases the
-        result's native buffers instead of waiting on Python GC, and a ``COMMIT``
+        result's native buffers instead of waiting on Python GC, a ``COMMIT``
         is issued every ``_WRITE_BATCH_SIZE`` rows so the in-memory WAL stays
-        bounded on very large repos. The whole write rolls back on error.
+        bounded on very large repos, and a ``CHECKPOINT`` after each commit
+        flushes that WAL to disk so memory does not climb with the row count.
+        The whole write rolls back on error.
 
         *progress* is called with the running row count after each committed
         batch (and once at the end), so callers can report how far the
@@ -250,6 +273,7 @@ class LadybugGraphStore(GraphStore):
                 rows += 1
                 if rows % _WRITE_BATCH_SIZE == 0:
                     self._conn.execute("COMMIT")
+                    self._checkpoint()
                     self._conn.execute("BEGIN TRANSACTION")
                     logger.info("  … %d rows written", rows)
                     if progress is not None:
@@ -258,6 +282,7 @@ class LadybugGraphStore(GraphStore):
         except Exception:
             self._conn.execute("ROLLBACK")
             raise
+        self._checkpoint()
         logger.info("  %d rows written (done)", rows)
         if progress is not None:
             progress(rows)
