@@ -63,6 +63,16 @@ def _relativize_path(file_path: str | None, root: Path) -> str | None:
         return p.as_posix()
 
 
+def _stderr_sink(msg: str) -> None:
+    """Echo a monitoring line to stderr with an explicit flush.
+
+    Flushing matters: if the process is OOM-killed (exit 137) the last reported
+    memory reading still reaches the terminal instead of dying in a buffer.
+    """
+    typer.echo(msg, err=True)
+    sys.stderr.flush()
+
+
 def _persist_progress(label: str, total: int):
     """Build a progress callback that prints ``written/total`` for the persist step.
 
@@ -102,8 +112,16 @@ def analyze(
         False, "--summaries", help="Generate local NL summaries via Ollama."
     ),
     force: bool = typer.Option(False, "--force", help="Re-index even if the index is fresh."),
+    monitor: bool = typer.Option(
+        False,
+        "--monitor/--no-monitor",
+        help="Log process/cgroup memory usage during the run "
+        "(helps diagnose exit-137 OOM kills). Also enabled by KLIT_FLOW_MONITOR=1.",
+    ),
 ) -> None:
     """Index a mobile app source tree and emit dependency + flow graphs."""
+    import os
+
     from klit_flow.emit.json_emitter import emit_graph_json
     from klit_flow.emit.markdown_emitter import emit_module_docs, emit_screen_docs
     from klit_flow.emit.mermaid_emitter import emit_dependency_diagram, emit_flow_diagram
@@ -112,6 +130,7 @@ def analyze(
     from klit_flow.graph.store import LadybugGraphStore
     from klit_flow.index.embeddings import Embedder
     from klit_flow.index.search import build_index
+    from klit_flow.monitor import ResourceMonitor
     from klit_flow.parsing.extractor import extract
     from klit_flow.summarize import Summarizer
     from klit_flow.walker import walk
@@ -134,6 +153,24 @@ def analyze(
             db_path.unlink()
 
     klit_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Resource monitor ───────────────────────────────────────────────────────
+    # Opt-in self-monitoring of memory / cgroup headroom to diagnose exit-137 OOM
+    # kills. A daemon thread samples in the background; on a hard kill it dies
+    # with the process (so no peak summary), but every periodic line is flushed
+    # to stderr as it happens. stop() at the end prints the peak on clean runs.
+    monitor_on = monitor or os.environ.get("KLIT_FLOW_MONITOR", "").lower() not in (
+        "",
+        "0",
+        "false",
+    )
+    mon: ResourceMonitor | None = None
+    if monitor_on:
+        try:
+            interval = float(os.environ.get("KLIT_FLOW_MONITOR_INTERVAL", "5"))
+        except ValueError:
+            interval = 5.0
+        mon = ResourceMonitor(label="analyze", interval=interval, sink=_stderr_sink).start()
 
     # ── Walk ──────────────────────────────────────────────────────────────────
     typer.echo(f"Walking {root} …")
@@ -192,6 +229,9 @@ def analyze(
     emit_screen_docs(screen_nodes, flow_edges, out_dir, summarizer=summarizer)
     emit_dependency_diagram(nodes, edges, out_dir)
     emit_flow_diagram(screen_nodes, flow_edges, out_dir)
+
+    if mon is not None:
+        mon.stop()
 
     typer.echo(f"\nDone. {len(nodes)} nodes, {len(edges)} edges -> {out_dir.relative_to(root)}")
 
