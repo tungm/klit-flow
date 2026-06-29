@@ -22,9 +22,11 @@ NULL for nodes that have not yet been embedded.
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import os
+import tempfile
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
@@ -172,6 +174,7 @@ class LadybugGraphStore(GraphStore):
     ) -> None:
         self._emb_dim = emb_dim
         self._lock = threading.Lock()
+        self._db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
         if buffer_pool_size is None:
             buffer_pool_size = _env_int(
@@ -321,32 +324,83 @@ class LadybugGraphStore(GraphStore):
     def add_edges(
         self, edges: Iterable[GraphEdge], *, progress: ProgressCallback | None = None
     ) -> None:
-        """Insert edges.
+        """Insert edges via LadybugDB's bulk ``COPY`` path.
 
-        The ``MATCH`` pattern silently produces no result — and therefore
-        creates no edge — when either endpoint is missing from the DB.
+        Per-row Cypher ``CREATE`` for millions of relationships grows memory
+        roughly linearly with the row count — even with bounded transactions and
+        per-batch checkpoints — and OOM-kills (exit 137) the persist step on a
+        large repo. ``COPY`` streams from a temp CSV on disk and keeps the write
+        memory bounded, so this is the supported path for bulk relationship loads.
+
+        ``COPY`` aborts on a relationship whose endpoint primary key is absent,
+        whereas the old ``MATCH``-based insert silently produced no edge. The
+        contract is preserved by filtering edges against the node ids currently
+        in the DB before writing the CSV — so ``add_nodes`` must run first.
+
+        *progress* reports rows staged to the CSV (the part that iterates the
+        Python edge set); the subsequent single ``COPY`` is the bulk load.
         """
-        query = (
-            f"MATCH (a:{_NODE_TABLE} {{id: $src}}), (b:{_NODE_TABLE} {{id: $dst}}) "
-            f"CREATE (a)-[:{_EDGE_TABLE} {{type: $type, confidence: $conf, "
-            f"file_path: $fp, line: $line, trigger: $trigger, condition: $cond}}]->(b)"
+        valid_ids = {
+            row[0] for row in self._conn.execute(f"MATCH (n:{_NODE_TABLE}) RETURN n.id").get_all()
+        }
+
+        # Colocate the temp CSV with the DB so it lands on the same volume and is
+        # cleaned up even if COPY raises.
+        fd, tmp_name = tempfile.mkstemp(
+            suffix=".csv", prefix="klit_edges_", dir=str(self._db_path.parent)
         )
-        params = (
-            {
-                "src": edge.src_id,
-                "dst": edge.dst_id,
-                "type": str(edge.type),
-                "conf": edge.confidence,
-                "fp": edge.file_path or "",
-                "line": edge.line or 0,
-                "trigger": edge.trigger or "",
-                "cond": json.dumps([c.model_dump() for c in edge.conditions])
-                if edge.conditions
-                else "",
-            }
-            for edge in edges
-        )
-        self._batched_write(query, params, progress=progress)
+        tmp_path = Path(tmp_name)
+        written = 0
+        try:
+            with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                # Header is skipped by HEADER=true; COPY maps columns positionally
+                # to the KlitEdge schema (FROM, TO, then properties in DDL order).
+                writer.writerow(
+                    [
+                        "src",
+                        "dst",
+                        "type",
+                        "confidence",
+                        "file_path",
+                        "line",
+                        "trigger",
+                        "condition",
+                    ]
+                )
+                for edge in edges:
+                    if edge.src_id not in valid_ids or edge.dst_id not in valid_ids:
+                        continue
+                    writer.writerow(
+                        [
+                            edge.src_id,
+                            edge.dst_id,
+                            str(edge.type),
+                            edge.confidence,
+                            edge.file_path or "",
+                            edge.line or 0,
+                            edge.trigger or "",
+                            json.dumps([c.model_dump() for c in edge.conditions])
+                            if edge.conditions
+                            else "",
+                        ]
+                    )
+                    written += 1
+                    if progress is not None and written % _WRITE_BATCH_SIZE == 0:
+                        logger.info("  … %d edge rows staged", written)
+                        progress(written)
+            if written:
+                # PARALLEL=false is required so quoted newlines (multi-line
+                # condition expressions) parse correctly.
+                logger.info("  bulk-loading %d edges via COPY …", written)
+                self._conn.execute(
+                    f"COPY {_EDGE_TABLE} FROM '{tmp_path.as_posix()}' (HEADER=true, PARALLEL=false)"
+                ).close()
+        finally:
+            tmp_path.unlink(missing_ok=True)
+        logger.info("  %d edge rows written (done)", written)
+        if progress is not None:
+            progress(written)
 
     # ── Query ─────────────────────────────────────────────────────────────────
 
