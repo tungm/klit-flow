@@ -37,6 +37,12 @@ release = [
     "zstandard>=0.22",
     "build>=1.0",
 ]
+# Optional: enables process RSS readings in the resource monitor on platforms
+# without /proc (e.g. Windows). On Linux/Docker the monitor reads /proc and
+# cgroup files directly, so psutil is not required there.
+monitor = [
+    "psutil>=5.9",
+]
 
 [project.scripts]
 klit-flow = "klit_flow.cli:app"

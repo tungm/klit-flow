@@ -53,6 +53,35 @@ docker run --rm -v "$(pwd)/my-app:/workspace" klit-flow analyze /workspace --pla
 docker run --rm -p 5173:5173 -v "$(pwd)/my-app:/workspace" klit-flow serve --host 0.0.0.0
 ```
 
+## Diagnostics & resource tuning
+
+The `analyze` "persist" step is the memory-heavy one; on a large repo it can be
+OOM-killed (exit 137) — usually the container/cgroup memory limit, not disk
+(a full disk surfaces as an `ENOSPC` traceback, not a silent SIGKILL). Edges are
+bulk-loaded via LadybugDB `COPY` (in `graph/store.py`) to keep write memory
+bounded; the following knobs help diagnose and tune what remains.
+
+| Variable | Effect | Default |
+|----------|--------|---------|
+| `KLIT_FLOW_MONITOR` | `1`/`true` enables the resource monitor for `analyze` (same as `--monitor`). Logs process RSS + cgroup usage/limit to stderr; prints a peak summary at the end. | off |
+| `KLIT_FLOW_MONITOR_INTERVAL` | Monitor sampling interval, seconds. | `5` |
+| `KLIT_FLOW_DB_BUFFER_POOL_BYTES` | Caps LadybugDB's buffer pool (`0` = engine auto-size, ~80% RAM). | `512` MiB |
+| `KLIT_FLOW_DB_MAX_THREADS` | Caps LadybugDB write parallelism (`0` = all cores). | `2` |
+
+- The monitor (`monitor.py`) is stdlib-only and offline. It reads `/proc` and
+  cgroup v1/v2 files directly on Linux/Docker — where exit-137 actually happens —
+  so no extra deps are needed there. On platforms without `/proc` (e.g. Windows),
+  process RSS requires the optional `psutil`: `pip install -e ".[monitor]"`.
+- The **cgroup** reading is the one that matters for exit 137: the OOM-killer
+  fires when cgroup usage hits the cgroup limit, and cgroup accounting includes
+  the DB file's page cache (so it catches "the DB got large and it died").
+
+```bash
+# Watch memory headroom during a Docker index run
+docker run --rm -e KLIT_FLOW_MONITOR=1 -e KLIT_FLOW_MONITOR_INTERVAL=2 \
+    -v "$(pwd)/my-app:/workspace" klit-flow analyze /workspace --platform android
+```
+
 ## How we work
 
 - Build strictly **phase by phase** per `PLAN.md`. Do not scaffold future phases.

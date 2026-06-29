@@ -26,6 +26,7 @@ import csv
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 from abc import ABC, abstractmethod
@@ -94,6 +95,19 @@ def parse_conditions_json(raw: str) -> list[dict[str, Any]]:
 _NODE_TABLE = "KlitNode"
 _EDGE_TABLE = "KlitEdge"
 _VEC_INDEX = "klit_emb_idx"
+
+# Control characters that can desync LadybugDB's CSV reader (NUL aborts the COPY;
+# record/field separators can split a row into the wrong column count → "expected
+# N values per row, but got more"). The C0 range, DEL, NEL, and the Unicode line
+# /paragraph separators are replaced with a space before writing. Edge text
+# (source expressions, triggers, paths) never needs these, so this is lossless in
+# practice and makes the bulk COPY robust across LadybugDB versions.
+_CSV_UNSAFE = re.compile(r"[\x00-\x1f\x7f\x85  ]")
+
+
+def _csv_safe(value: str) -> str:
+    """Strip control / line-separator chars that could corrupt CSV parsing."""
+    return _CSV_UNSAFE.sub(" ", value)
 
 
 class GraphStore(ABC):
@@ -353,7 +367,9 @@ class LadybugGraphStore(GraphStore):
         written = 0
         try:
             with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
-                writer = csv.writer(fh)
+                # QUOTE_ALL: quote every field so no value can be mistaken for a
+                # delimiter, regardless of LadybugDB's CSV-reader version/defaults.
+                writer = csv.writer(fh, quoting=csv.QUOTE_ALL)
                 # Header is skipped by HEADER=true; COPY maps columns positionally
                 # to the KlitEdge schema (FROM, TO, then properties in DDL order).
                 writer.writerow(
@@ -377,12 +393,14 @@ class LadybugGraphStore(GraphStore):
                             edge.dst_id,
                             str(edge.type),
                             edge.confidence,
-                            edge.file_path or "",
+                            _csv_safe(edge.file_path or ""),
                             edge.line or 0,
-                            edge.trigger or "",
-                            json.dumps([c.model_dump() for c in edge.conditions])
-                            if edge.conditions
-                            else "",
+                            _csv_safe(edge.trigger or ""),
+                            _csv_safe(
+                                json.dumps([c.model_dump() for c in edge.conditions])
+                                if edge.conditions
+                                else ""
+                            ),
                         ]
                     )
                     written += 1
@@ -390,11 +408,14 @@ class LadybugGraphStore(GraphStore):
                         logger.info("  … %d edge rows staged", written)
                         progress(written)
             if written:
-                # PARALLEL=false is required so quoted newlines (multi-line
-                # condition expressions) parse correctly.
+                # Pin the dialect (QUOTE/ESCAPE = ") to match csv.writer's RFC4180
+                # quote-doubling, and PARALLEL=false so any quoted field parses
+                # deterministically. Together with QUOTE_ALL + control-char
+                # stripping this makes the load robust across LadybugDB versions.
                 logger.info("  bulk-loading %d edges via COPY …", written)
                 self._conn.execute(
-                    f"COPY {_EDGE_TABLE} FROM '{tmp_path.as_posix()}' (HEADER=true, PARALLEL=false)"
+                    f"COPY {_EDGE_TABLE} FROM '{tmp_path.as_posix()}' "
+                    f"(HEADER=true, PARALLEL=false, QUOTE='\"', ESCAPE='\"')"
                 ).close()
         finally:
             tmp_path.unlink(missing_ok=True)

@@ -223,6 +223,47 @@ def test_add_edge_with_missing_dst_is_silent(store: LadybugGraphStore) -> None:
     assert rows == []
 
 
+def test_add_edges_survives_hostile_text(store: LadybugGraphStore) -> None:
+    """Edge text with commas, quotes, backslashes, newlines and NUL must load.
+
+    The bulk COPY path round-trips arbitrary source-derived text through CSV;
+    this guards against the "expected N values per row, but got more" / NUL
+    COPY failures by quoting every field and stripping control characters.
+    """
+    from klit_flow.graph.model import ConditionLevel
+
+    store.add_nodes(
+        [
+            _make_file_node("f1", "Main.kt", "/src/Main.kt"),
+            _make_file_node("f2", "Auth.kt", "/src/Auth.kt"),
+        ]
+    )
+    store.add_edges(
+        [
+            GraphEdge(
+                src_id="f1",
+                dst_id="f2",
+                type=RelationType.CALLS,
+                confidence=0.5,
+                file_path="a\x00b.kt",  # NUL would otherwise abort the COPY
+                line=7,
+                trigger="tap\nnow",  # embedded newline
+                conditions=[
+                    # commas inside generics + escaped quotes + backslash
+                    ConditionLevel(expression='x is Map<String, Int> && s == "a,b\\"c"', kind="if")
+                ],
+            )
+        ]
+    )
+    rows = store.query(
+        "MATCH (a:KlitNode)-[e:KlitEdge]->(b:KlitNode) RETURN a.id, b.id, e.condition"
+    )
+    assert len(rows) == 1
+    assert rows[0][0] == "f1" and rows[0][1] == "f2"
+    # The generics comma survived intact (no row-splitting).
+    assert "Map<String, Int>" in rows[0][2]
+
+
 def test_multiple_edge_types_stored(store: LadybugGraphStore) -> None:
     store.add_nodes(
         [

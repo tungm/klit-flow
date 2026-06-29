@@ -326,6 +326,8 @@ def flows(
     typer.echo("-" * 100)
     for row in rows:
         src_name, dst_name, trigger, confidence, cond_raw = row
+        # CSV bulk-load stores empty strings as NULL, so trigger may be None.
+        trigger = trigger or ""
         conds = parse_conditions_json(cond_raw)
         if conds:
             cond_str = " → ".join(
