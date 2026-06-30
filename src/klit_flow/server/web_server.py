@@ -165,6 +165,30 @@ _SPA_HTML = """\
     .fr button{background:var(--surface);border:1px solid var(--border);color:var(--muted);
                padding:5px 10px;border-radius:6px;font-size:.8rem;cursor:pointer}
     .fr button:hover{color:var(--text)}
+
+    /* Searchable combobox (named-flow next screen + screen-flow search) */
+    .combo{position:relative}
+    .combo-list{position:absolute;top:100%;left:0;right:0;z-index:60;margin-top:3px;
+                background:var(--surface);border:1px solid var(--border);border-radius:6px;
+                max-height:240px;overflow-y:auto;display:none;box-shadow:0 6px 20px #0008}
+    .combo-list.open{display:block}
+    .combo-item{padding:6px 10px;font-size:.82rem;cursor:pointer;white-space:nowrap;
+                overflow:hidden;text-overflow:ellipsis}
+    .combo-item:hover,.combo-item.active{background:rgba(124,58,237,.22);color:var(--text)}
+    .combo-empty{padding:6px 10px;font-size:.8rem;color:var(--muted)}
+
+    /* Screen Flows floating search bar */
+    .scr-search{position:absolute;top:12px;left:12px;z-index:20;display:flex;gap:8px;
+                align-items:center}
+    .scr-search .combo{width:230px}
+    .scr-search input{width:100%;background:var(--surface);border:1px solid var(--border);
+                color:var(--text);padding:6px 10px;border-radius:6px;font-size:.83rem;outline:none}
+    .scr-search input:focus{border-color:var(--accent)}
+    .scr-search button{background:var(--surface);border:1px solid var(--border);color:var(--muted);
+                padding:6px 10px;border-radius:6px;font-size:.8rem;cursor:pointer;white-space:nowrap}
+    .scr-search button:hover{color:var(--text);border-color:var(--accent)}
+    #scr-filter-label{font-size:.78rem;color:var(--accent-l);background:var(--surface);
+                border:1px solid var(--border);padding:5px 9px;border-radius:6px;white-space:nowrap}
     table{width:100%;border-collapse:collapse;font-size:.83rem}
     th{text-align:left;padding:8px 12px;background:var(--surface);color:var(--muted);
        font-weight:500;font-size:.75rem;text-transform:uppercase;letter-spacing:.04em;
@@ -200,6 +224,8 @@ _SPA_HTML = """\
     .nf-trm:hover{color:#f87171}
     .nf-add-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
     .nf-add-row select{flex:1;min-width:160px}
+    .nf-add-row .combo{flex:1;min-width:160px}
+    .nf-add-row .combo input{width:100%}
     .nf-builder button{background:var(--bg);border:1px solid var(--border);color:var(--text);
                        padding:6px 12px;border-radius:6px;font-size:.8rem;cursor:pointer}
     .nf-builder button:hover{border-color:var(--accent)}
@@ -297,6 +323,14 @@ _SPA_HTML = """\
   <div id="screens-view" class="view">
     <div class="canvas-wrap">
       <div class="loading-overlay" id="scr-loading" style="display:none"><div class="spin"></div><p>Loading flows\u2026</p></div>
+      <div class="scr-search">
+        <div class="combo" id="scr-combo">
+          <input id="scr-q" type="search" placeholder="Search a screen\u2026" autocomplete="off">
+          <div class="combo-list" id="scr-q-list"></div>
+        </div>
+        <button id="scr-all-btn" style="display:none">Show all</button>
+        <span id="scr-filter-label" style="display:none"></span>
+      </div>
       <canvas id="scr-canvas"></canvas>
       <div class="graph-controls">
         <button class="gc-btn" id="scr-zin" title="Zoom in">+</button>
@@ -348,8 +382,11 @@ _SPA_HTML = """\
       <div class="nf-where" id="nf-where">Add a starting screen.</div>
       <div id="nf-tree"></div>
       <div class="nf-add-row">
-        <select id="nf-next"></select>
-        <button id="nf-add">Add screen</button>
+        <div class="combo" id="nf-next-combo">
+          <input id="nf-next" type="text" placeholder="Search a screen…" autocomplete="off">
+          <div class="combo-list" id="nf-next-list"></div>
+        </div>
+        <button id="nf-add" disabled>Add screen</button>
         <button id="nf-remove">Remove selected</button>
         <button id="nf-deselect" title="Deselect so you can add a separate starting screen">Add separate root</button>
         <button id="nf-clear">Clear all</button>
@@ -403,6 +440,37 @@ function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').repl
 function base(fp){return fp?fp.replace(/\\\\/g,'/').split('/').pop():''}
 function badge(kind){const c=kc(kind);return`<span class="badge" style="background:${c}22;color:${c}">${esc(kind)}</span>`}
 function trigBadge(t){const c=tc(t||'programmatic');return`<span class="badge" style="background:${c}22;color:${c}">${esc(t||'')}</span>`}
+
+// Reusable searchable dropdown. getItems() returns [{id,name},…] lazily (so it
+// reflects current state); onSelect(item) fires on pick. Supports type-to-filter,
+// arrow-key navigation, Enter, Escape, and click-away close.
+function makeCombo({input,list,getItems,onSelect}){
+  let filtered=[],active=-1,open=false;
+  function render(){
+    const q=input.value.trim().toLowerCase();
+    filtered=getItems().filter(it=>it.name.toLowerCase().includes(q));
+    if(active>=filtered.length)active=filtered.length-1;
+    list.innerHTML=filtered.length
+      ?filtered.map((it,i)=>`<div class="combo-item${i===active?' active':''}" data-i="${i}">${esc(it.name)}</div>`).join('')
+      :'<div class="combo-empty">No matching screen</div>';
+  }
+  function openList(){open=true;active=-1;render();list.classList.add('open')}
+  function closeList(){open=false;list.classList.remove('open')}
+  function choose(it){if(!it)return;input.value=it.name;closeList();onSelect(it)}
+  input.addEventListener('focus',openList);
+  input.addEventListener('input',()=>{if(!open)open=true;list.classList.add('open');active=-1;render()});
+  input.addEventListener('keydown',e=>{
+    if(!open&&(e.key==='ArrowDown'||e.key==='Enter')){openList();return}
+    if(!open)return;
+    if(e.key==='ArrowDown'){active=Math.min(filtered.length-1,active+1);render();e.preventDefault()}
+    else if(e.key==='ArrowUp'){active=Math.max(0,active-1);render();e.preventDefault()}
+    else if(e.key==='Enter'){choose(active>=0?filtered[active]:(filtered.length===1?filtered[0]:null));e.preventDefault()}
+    else if(e.key==='Escape'){closeList()}
+  });
+  list.addEventListener('mousedown',e=>{const d=e.target.closest('.combo-item');if(d)choose(filtered[+d.dataset.i])});
+  document.addEventListener('click',e=>{if(!input.parentElement.contains(e.target))closeList()});
+  return {refresh(){if(open)render()},clear(){input.value=''},close:closeList};
+}
 
 function roundRect(cx,x,y,w,h,r){
   cx.beginPath();cx.moveTo(x+r,y);cx.lineTo(x+w-r,y);
@@ -605,6 +673,9 @@ let scrNodes=[],scrEdges=[];
 let scrPan={x:0,y:0},scrZoom=1,scrAlpha=0,scrRunning=false;
 let scrDrag=null,scrPanStart=null,scrMd=null,scrSel=null;
 let scrLoaded=false;
+// All screen nodes (unfiltered), the active focus filter (null = show every
+// screen), and the search combobox instance.
+let scrAllScreens=[],scrFocusId=null,scrCombo=null;
 
 new ResizeObserver(()=>{
   const p=scrCanvas.parentElement;
@@ -616,25 +687,74 @@ async function loadScreenFlows(){
   document.getElementById('scr-loading').style.display='flex';
   try{
     await ensureGraph();
-    scrNodes=allNodes.filter(n=>n.kind==='Screen');
-    const ids=new Set(scrNodes.map(n=>n.id));
-    scrEdges=allEdges
-      .filter(e=>e.type==='NAVIGATES_TO'&&ids.has(e.src)&&ids.has(e.dst))
-      .map(e=>({...e,s:nodeById[e.src],t:nodeById[e.dst]}))
-      .filter(e=>e.s&&e.t);
-    const W=scrCanvas.width||800,H=scrCanvas.height||600;
-    scrNodes.forEach((n,i)=>{
-      const a=2*Math.PI*i/scrNodes.length;
-      n.sx=W/2+Math.min(W,H)*.32*Math.cos(a)+(Math.random()-.5)*20;
-      n.sy=H/2+Math.min(W,H)*.32*Math.sin(a)+(Math.random()-.5)*20;
-      n.svx=0;n.svy=0;
-    });
-    scrSim();
+    scrAllScreens=allNodes.filter(n=>n.kind==='Screen');
+    if(!scrCombo){
+      scrCombo=makeCombo({
+        input:document.getElementById('scr-q'),
+        list:document.getElementById('scr-q-list'),
+        getItems:()=>scrAllScreens.map(n=>({id:n.id,name:n.name}))
+          .sort((a,b)=>a.name.localeCompare(b.name)),
+        onSelect:it=>scrSetFocus(it.id),
+      });
+      document.getElementById('scr-all-btn').addEventListener('click',scrShowAll);
+    }
+    scrApplyFilter();
     document.getElementById('scr-loading').style.display='none';
     scrLoaded=true;
   }catch(e){
     document.getElementById('scr-loading').innerHTML=`<p style="color:#f87171">Failed: ${esc(e.message)}</p>`;
   }
+}
+// Rebuild the visible graph from the current focus filter, then lay out + simulate.
+// Focus mode keeps only the chosen screen and the screens directly linked to it
+// (either direction), plus the navigation edges incident to it.
+function scrApplyFilter(){
+  let screens,navEdges;
+  if(scrFocusId){
+    navEdges=allEdges.filter(e=>e.type==='NAVIGATES_TO'&&(e.src===scrFocusId||e.dst===scrFocusId));
+    const ids=new Set([scrFocusId]);
+    navEdges.forEach(e=>{ids.add(e.src);ids.add(e.dst)});
+    screens=scrAllScreens.filter(n=>ids.has(n.id));
+  }else{
+    screens=scrAllScreens.slice();
+    const ids=new Set(screens.map(n=>n.id));
+    navEdges=allEdges.filter(e=>e.type==='NAVIGATES_TO'&&ids.has(e.src)&&ids.has(e.dst));
+  }
+  scrNodes=screens;
+  const sset=new Set(screens.map(n=>n.id));
+  scrEdges=navEdges
+    .filter(e=>sset.has(e.src)&&sset.has(e.dst))
+    .map(e=>({...e,s:nodeById[e.src],t:nodeById[e.dst]}))
+    .filter(e=>e.s&&e.t);
+  const W=scrCanvas.width||800,H=scrCanvas.height||600;
+  scrNodes.forEach((n,i)=>{
+    const a=2*Math.PI*i/(scrNodes.length||1);
+    n.sx=W/2+Math.min(W,H)*.32*Math.cos(a)+(Math.random()-.5)*20;
+    n.sy=H/2+Math.min(W,H)*.32*Math.sin(a)+(Math.random()-.5)*20;
+    n.svx=0;n.svy=0;
+  });
+  scrSim();
+  // Update the filter banner + reset/zoom controls.
+  const label=document.getElementById('scr-filter-label');
+  const allBtn=document.getElementById('scr-all-btn');
+  if(scrFocusId){
+    const f=nodeById[scrFocusId];
+    label.textContent=`Showing ${scrNodes.length} screen${scrNodes.length===1?'':'s'} related to ${f?f.name:''}`;
+    label.style.display='';allBtn.style.display='';
+  }else{
+    label.style.display='none';allBtn.style.display='none';
+  }
+}
+function scrSetFocus(id){
+  scrFocusId=id;
+  scrPan={x:0,y:0};scrZoom=1;
+  scrApplyFilter();
+}
+function scrShowAll(){
+  scrFocusId=null;
+  document.getElementById('scr-q').value='';
+  if(scrCombo)scrCombo.close();
+  scrApplyFilter();
 }
 
 function scrSim(){scrAlpha=1;if(!scrRunning){scrRunning=true;requestAnimationFrame(scrStep)}}
@@ -927,6 +1047,9 @@ document.getElementById('flows-reset').addEventListener('click',()=>{document.ge
 // so branches sharing a prefix share tree nodes. nfSel is the uid of the screen
 // new screens are added under (null = add a starting/root screen).
 let nfTree=[],nfSel=null,nfUidCt=0,nfEditingId=null,nfCache={},nfInit=false;
+// Searchable "next screen" picker state: current candidate list, the chosen id,
+// and the combobox instance (built once on first load).
+let nfNextOpts=[],nfNextId=null,nfNextCombo=null;
 function nfUid(){return 'n'+(++nfUidCt)}
 
 function nfScreens(){return allNodes.filter(n=>n.kind==='Screen').sort((a,b)=>a.name.localeCompare(b.name))}
@@ -949,16 +1072,16 @@ function nfRemoveUid(uid,nodes){
   return false;
 }
 function nfRefreshNext(){
-  const sel=document.getElementById('nf-next');
   const node=nfSel?nfFind(nfSel):null;
-  const opts=node?nfDestinations(node.id):nfScreens();
-  if(opts.length){
-    sel.innerHTML=opts.map(n=>`<option value="${esc(n.id)}">${esc(n.name)}</option>`).join('');
-    sel.disabled=false;document.getElementById('nf-add').disabled=false;
-  }else{
-    sel.innerHTML=`<option value="">${node?'(no navigable next screen)':'(no screens found)'}</option>`;
-    sel.disabled=true;document.getElementById('nf-add').disabled=true;
-  }
+  nfNextOpts=node?nfDestinations(node.id):nfScreens();
+  const input=document.getElementById('nf-next');
+  // Context changed → drop any pending pick and reset the search box.
+  nfNextId=null;input.value='';
+  const has=nfNextOpts.length>0;
+  input.disabled=!has;
+  document.getElementById('nf-add').disabled=true;
+  input.placeholder=has?'Search a screen…':(node?'(no navigable next screen)':'(no screens found)');
+  if(nfNextCombo)nfNextCombo.refresh();
   const where=document.getElementById('nf-where');
   if(node)where.textContent='Adding next screens after: '+node.name+'  (click another screen to change where, or "Add separate root").';
   else if(nfTree.length)where.textContent='Click a screen to add the next one after it, or add a separate starting screen.';
@@ -981,7 +1104,19 @@ function nfRenderTree(){
 function nfMsg(t){document.getElementById('nf-msg').textContent=t||''}
 async function loadNamedFlows(){
   await ensureGraph();
-  if(!nfInit){nfRenderTree();nfRefreshNext();nfInit=true}
+  if(!nfInit){
+    nfNextCombo=makeCombo({
+      input:document.getElementById('nf-next'),
+      list:document.getElementById('nf-next-list'),
+      getItems:()=>nfNextOpts.map(n=>({id:n.id,name:n.name})),
+      onSelect:it=>{nfNextId=it.id;document.getElementById('nf-add').disabled=false},
+    });
+    // Typing invalidates a prior pick until the user selects again.
+    document.getElementById('nf-next').addEventListener('input',()=>{
+      nfNextId=null;document.getElementById('nf-add').disabled=true;
+    });
+    nfRenderTree();nfRefreshNext();nfInit=true;
+  }
   nfList();
 }
 function nfSelect(uid){
@@ -990,7 +1125,7 @@ function nfSelect(uid){
 }
 function nfDeselect(){nfSel=null;nfMsg('');nfRenderTree();nfRefreshNext()}
 function nfAdd(){
-  const id=document.getElementById('nf-next').value;if(!id)return;
+  const id=nfNextId;if(!id)return;
   const n=nodeById[id];if(!n)return;
   const node={uid:nfUid(),id:n.id,name:n.name,children:[]};
   const parent=nfSel?nfFind(nfSel):null;

@@ -38,7 +38,9 @@
       "Bash(rm -rf lbtest)",
       "Bash(cat docker-compose.yml)",
       "Bash(tail -30 Dockerfile)",
-      "Bash(echo \"exit=$?\")"
+      "Bash(echo \"exit=$?\")",
+      "Bash(node --check _spa.js)",
+      "Bash(rm -f _spa.js)"
     ]
   }
 }
